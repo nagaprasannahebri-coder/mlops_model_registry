@@ -187,4 +187,5 @@ if __name__ == "__main__":
     print("Access the API at http://12.0.0.1:8055")
     print("API documentation available at http://127.0.0.1:8055/docs")
     
-    uvicorn.run(app, host="127.0.0.1", port=8055)
+
+    uvicorn.run(app, host="0.0.0.0", port=8055)
