@@ -1,80 +1,97 @@
 name: MLOps Model Registry Pipeline
 
 on:
-  workflow_dispatch:      # Manual trigger button
+  workflow_dispatch:      # Allows manual trigger
   push:
-    branches: [ main ]    # Auto-trigger on code changes
+    branches: [ main ]    # Runs on every push to main
 
 jobs:
   deploy-pipeline:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout repo
+      # 1️⃣ Checkout the repository
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Setup Python
+      # 2️⃣ Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       # 3️⃣ Install dependencies
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: |
           pip install --no-cache-dir -r requirements.txt
           pip install snowflake-connector-python python-dotenv
 
-      # 4️⃣ Trigger Snowflake ML Pipeline
-      - name: Trigger ML Pipeline in Snowflake
+      # 4️⃣ (Optional) Debug step to confirm secrets load properly
+      - name: Debug Snowflake Environment
+        run: |
+          echo "🔍 Checking Snowflake environment variables..."
+          echo "SNOWFLAKE_USER=$SNOWFLAKE_USER"
+          echo "SNOWFLAKE_ACCOUNT=$SNOWFLAKE_ACCOUNT"
+          echo "SNOWFLAKE_WAREHOUSE=$SNOWFLAKE_WAREHOUSE"
+          echo "SNOWFLAKE_DATABASE=$SNOWFLAKE_DATABASE"
+          echo "SNOWFLAKE_SCHEMA=$SNOWFLAKE_SCHEMA"
+        env:
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
+
+      # 5️⃣ Trigger the ML pipeline inside Snowflake
+      - name: Trigger Snowflake ML Pipeline
         env:
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
-          SNOWFLAKE_SCHEMA: ${{ vars.SNOWFLAKE_SCHEMA }}
-        run: |
-          python trigger_pipeline.py
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
+          SNOWFLAKE_STAGE: ${{ secrets.SNOWFLAKE_STAGE }}
+        run: python trigger_pipeline.py
 
-      # 5️⃣ Build Docker image for model serving
+      # 6️⃣ Build Docker image for FastAPI model serving
       - name: Build Docker Image
         run: docker build -t baseline-model-api .
 
-      # 6️⃣ Run container and test API
-      - name: Run and Health Check
+      # 7️⃣ Run container & perform health check
+      - name: Run and Check API Health
         run: |
           docker run -d -p 8055:8055 \
             -e SNOWFLAKE_USER=${{ secrets.SNOWFLAKE_USER }} \
             -e SNOWFLAKE_PASSWORD=${{ secrets.SNOWFLAKE_PASSWORD }} \
             -e SNOWFLAKE_ACCOUNT=${{ secrets.SNOWFLAKE_ACCOUNT }} \
-            -e SNOWFLAKE_WAREHOUSE=${{ vars.SNOWFLAKE_WAREHOUSE }} \
-            -e SNOWFLAKE_DATABASE=${{ vars.SNOWFLAKE_DATABASE }} \
-            -e SNOWFLAKE_SCHEMA=${{ vars.SNOWFLAKE_SCHEMA }} \
-            -e SNOWFLAKE_STAGE=${{ vars.SNOWFLAKE_STAGE }} \
+            -e SNOWFLAKE_WAREHOUSE=${{ secrets.SNOWFLAKE_WAREHOUSE }} \
+            -e SNOWFLAKE_DATABASE=${{ secrets.SNOWFLAKE_DATABASE }} \
+            -e SNOWFLAKE_SCHEMA=${{ secrets.SNOWFLAKE_SCHEMA }} \
+            -e SNOWFLAKE_STAGE=${{ secrets.SNOWFLAKE_STAGE }} \
             baseline-model-api
 
           echo "⏳ Waiting for API to start..."
           sleep 25
 
-          echo "🩺 Checking health endpoint..."
+          echo "🩺 Checking FastAPI health endpoint..."
           for i in {1..10}; do
             if curl -s http://127.0.0.1:8055/ | grep -q "ok"; then
               echo "✅ API is healthy!"
               exit 0
             fi
-            echo "Attempt $i: not ready yet..."
+            echo "Attempt $i: API not ready yet, retrying..."
             sleep 5
           done
-          echo "❌ API did not respond after retries."
+
+          echo "❌ API failed to respond after retries."
+          docker logs $(docker ps -q)
           exit 1
 
-      # 7️⃣ (Optional) Push image to GitHub Container Registry
-      - name: Push Image to GHCR
+      # 8️⃣ (Optional) Push image to GitHub Container Registry
+      - name: Push Docker Image to GHCR
         if: success()
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
           docker tag baseline-model-api ghcr.io/${{ github.repository_owner }}/baseline-model-api:latest
           docker push ghcr.io/${{ github.repository_owner }}/baseline-model-api:latest
-
