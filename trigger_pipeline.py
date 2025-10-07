@@ -45,3 +45,4 @@ def trigger_pipeline():
 
 if __name__ == "__main__":
     trigger_pipeline()
+
