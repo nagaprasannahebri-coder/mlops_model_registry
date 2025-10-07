@@ -1,0 +1,31 @@
+name: Baseline Model Deployment
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy-baseline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image
+        run: docker build -t baseline-model-api .
+
+      - name: Run Container and Test Endpoint
+        run: |
+          docker run -d -p 8055:8055 \
+            -e SNOWFLAKE_USER=${{ secrets.SNOWFLAKE_USER }} \
+            -e SNOWFLAKE_PASSWORD=${{ secrets.SNOWFLAKE_PASSWORD }} \
+            -e SNOWFLAKE_ACCOUNT=${{ secrets.SNOWFLAKE_ACCOUNT }} \
+            baseline-model-api
+          
+          echo "⏳ Waiting for API to start..."
+          sleep 10
+
+          echo "🔍 Checking health endpoint..."
+          curl -f http://127.0.0.1:8055/ || (echo "API did not respond" && exit 1)
