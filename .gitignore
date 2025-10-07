@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# Environment files
+.env
+
+# Models
+models/
+
+# OS / Editor junk
+.DS_Store
+.vscode/
+.idea/
