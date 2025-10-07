@@ -1,9 +1,9 @@
 name: MLOps Model Registry Pipeline
 
 on:
-  workflow_dispatch:      # Allows manual trigger
+  workflow_dispatch:      # Manual trigger via GitHub Actions UI
   push:
-    branches: [ main ]    # Runs on every push to main
+    branches: [ main ]    # Auto-trigger when code is pushed to main
 
 jobs:
   deploy-pipeline:
@@ -14,27 +14,26 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Set up Python
+      # 2️⃣ Set up Python 3.10
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
       # 3️⃣ Install dependencies
-      - name: Install Python dependencies
+      - name: Install Dependencies
         run: |
           pip install --no-cache-dir -r requirements.txt
           pip install snowflake-connector-python python-dotenv
 
-      # 4️⃣ (Optional) Debug step to confirm secrets load properly
+      # 4️⃣ Debug Snowflake Environment (optional, helps confirm secrets load)
       - name: Debug Snowflake Environment
         run: |
-          echo "🔍 Checking Snowflake environment variables..."
-          echo "SNOWFLAKE_USER=$SNOWFLAKE_USER"
-          echo "SNOWFLAKE_ACCOUNT=$SNOWFLAKE_ACCOUNT"
-          echo "SNOWFLAKE_WAREHOUSE=$SNOWFLAKE_WAREHOUSE"
-          echo "SNOWFLAKE_DATABASE=$SNOWFLAKE_DATABASE"
-          echo "SNOWFLAKE_SCHEMA=$SNOWFLAKE_SCHEMA"
+          echo "🔍 Checking environment variables..."
+          echo "Account: $SNOWFLAKE_ACCOUNT"
+          echo "Warehouse: $SNOWFLAKE_WAREHOUSE"
+          echo "Database: $SNOWFLAKE_DATABASE"
+          echo "Schema: $SNOWFLAKE_SCHEMA"
         env:
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -42,7 +41,7 @@ jobs:
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
 
-      # 5️⃣ Trigger the ML pipeline inside Snowflake
+      # 5️⃣ Trigger Snowflake ML pipeline (using trigger_pipeline.py)
       - name: Trigger Snowflake ML Pipeline
         env:
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
@@ -54,22 +53,25 @@ jobs:
           SNOWFLAKE_STAGE: ${{ secrets.SNOWFLAKE_STAGE }}
         run: python trigger_pipeline.py
 
-      # 6️⃣ Build Docker image for FastAPI model serving
+      # 6️⃣ Build Docker image for FastAPI serving
       - name: Build Docker Image
         run: docker build -t baseline-model-api .
 
-      # 7️⃣ Run container & perform health check
+      # 7️⃣ Run container and perform health check
       - name: Run and Check API Health
+        id: run_container
         run: |
-          docker run -d -p 8055:8055 \
-            -e SNOWFLAKE_USER=${{ secrets.SNOWFLAKE_USER }} \
-            -e SNOWFLAKE_PASSWORD=${{ secrets.SNOWFLAKE_PASSWORD }} \
-            -e SNOWFLAKE_ACCOUNT=${{ secrets.SNOWFLAKE_ACCOUNT }} \
-            -e SNOWFLAKE_WAREHOUSE=${{ secrets.SNOWFLAKE_WAREHOUSE }} \
-            -e SNOWFLAKE_DATABASE=${{ secrets.SNOWFLAKE_DATABASE }} \
-            -e SNOWFLAKE_SCHEMA=${{ secrets.SNOWFLAKE_SCHEMA }} \
-            -e SNOWFLAKE_STAGE=${{ secrets.SNOWFLAKE_STAGE }} \
-            baseline-model-api
+          echo "🐳 Running Docker container for model serving..."
+          CONTAINER_ID=$(docker run -d -p 8055:8055 \
+            -e SNOWFLAKE_USER="${{ secrets.SNOWFLAKE_USER }}" \
+            -e SNOWFLAKE_PASSWORD="${{ secrets.SNOWFLAKE_PASSWORD }}" \
+            -e SNOWFLAKE_ACCOUNT="${{ secrets.SNOWFLAKE_ACCOUNT }}" \
+            -e SNOWFLAKE_WAREHOUSE="${{ secrets.SNOWFLAKE_WAREHOUSE }}" \
+            -e SNOWFLAKE_DATABASE="${{ secrets.SNOWFLAKE_DATABASE }}" \
+            -e SNOWFLAKE_SCHEMA="${{ secrets.SNOWFLAKE_SCHEMA }}" \
+            -e SNOWFLAKE_STAGE="${{ secrets.SNOWFLAKE_STAGE }}" \
+            baseline-model-api)
+          echo "Container started: $CONTAINER_ID"
 
           echo "⏳ Waiting for API to start..."
           sleep 25
@@ -78,17 +80,31 @@ jobs:
           for i in {1..10}; do
             if curl -s http://127.0.0.1:8055/ | grep -q "ok"; then
               echo "✅ API is healthy!"
+              echo "container_id=$CONTAINER_ID" >> $GITHUB_ENV
               exit 0
             fi
             echo "Attempt $i: API not ready yet, retrying..."
             sleep 5
           done
 
-          echo "❌ API failed to respond after retries."
-          docker logs $(docker ps -q)
+          echo "❌ API did not respond after retries."
+          docker logs $CONTAINER_ID
+          docker stop $CONTAINER_ID
           exit 1
 
-      # 8️⃣ (Optional) Push image to GitHub Container Registry
+      # 8️⃣ Stop and clean up the container
+      - name: Stop and Clean Up Container
+        if: always()
+        run: |
+          if [ -n "$CONTAINER_ID" ]; then
+            echo "🧹 Stopping container $CONTAINER_ID..."
+            docker stop $CONTAINER_ID
+            docker rm $CONTAINER_ID
+          else
+            echo "No container to clean up."
+          fi
+
+      # 9️⃣ (Optional) Push Docker image to GitHub Container Registry
       - name: Push Docker Image to GHCR
         if: success()
         run: |
