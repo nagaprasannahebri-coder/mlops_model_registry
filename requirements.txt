@@ -1,0 +1,7 @@
+snowflake-connector-python
+python-dotenv
+fastapi
+uvicorn
+onnxruntime
+numpy
+pydantic
