@@ -25,7 +25,15 @@ jobs:
             baseline-model-api
           
           echo "⏳ Waiting for API to start..."
-          sleep 10
+          sleep 25
 
           echo "🔍 Checking health endpoint..."
           curl -f http://127.0.0.1:8055/ || (echo "API did not respond" && exit 1)
+
+      - name: Debug Container Logs (if failed)
+        if: ${{ failure() }}
+        run: |
+          echo "----- Container Logs -----"
+          docker ps -a
+          docker logs $(docker ps -aq | head -n 1)
+          echo "---------------------------"
