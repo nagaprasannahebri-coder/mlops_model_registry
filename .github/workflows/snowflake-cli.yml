@@ -1,26 +1,18 @@
 name: Snowflake CLI Pipeline Trigger
-
-# 🔹 Only run when manually triggered from the GitHub Actions tab
 on:
   workflow_dispatch:
 
 jobs:
   run-snowflake-cli:
     runs-on: ubuntu-latest
-    name: Trigger Snowflake ML Pipeline
 
     steps:
-      # ✅ Step 1: Checkout your repository code
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ Step 2: Setup Snowflake CLI
       - name: Setup Snowflake CLI
-        uses: snowflakedb/snowflake-cli-action@v2.0
-        with:
-          custom-github-ref: "feature/my-branch"  # or "main" / a tag / commit hash
+        uses: snowflakedb/snowflake-cli-action@v2.0   # ← no custom-github-ref
 
-      # ✅ Step 3: Trigger the Snowflake ML pipeline
       - name: Execute Snowflake Task
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -30,23 +22,13 @@ jobs:
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
         run: |
-          echo "🔹 Connecting to Snowflake and executing root task..."
-          snowflake sql -q "
-            USE WAREHOUSE $SNOWFLAKE_WAREHOUSE;
-            USE DATABASE $SNOWFLAKE_DATABASE;
-            USE SCHEMA $SNOWFLAKE_SCHEMA;
-            EXECUTE TASK TASK_1_DATA_INGESTION;
-          "
-          echo "✅ ML pipeline triggered successfully!"
+          snowflake sql -q "USE WAREHOUSE ${SNOWFLAKE_WAREHOUSE}; USE DATABASE ${SNOWFLAKE_DATABASE}; USE SCHEMA ${SNOWFLAKE_SCHEMA}; EXECUTE TASK TASK_1_DATA_INGESTION;"
 
-      # ✅ Step 4: Download latest ONNX model from stage
-      - name: Download latest model from Snowflake stage
+      - name: Download latest ONNX model
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
         run: |
-          echo "📥 Downloading latest ONNX model from stage..."
           mkdir -p models
           snowflake sql -q "GET @ML_MODELS_STAGE/latest_model.onnx file://./models;"
-          echo "✅ Model downloaded successfully to ./models"
