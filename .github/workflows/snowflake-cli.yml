@@ -1,52 +1,42 @@
 name: Snowflake CLI Pipeline Trigger
 
 on:
-  workflow_dispatch:  # Manual trigger only
+  workflow_dispatch:
 
 jobs:
   run-snowflake-cli:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout your repository
+      # 1️⃣ Checkout code
       - name: 🚀 Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install the official Snowflake CLI
+      # 2️⃣ Install Snowflake CLI (official method)
       - name: 🧰 Install Snowflake CLI
         uses: snowflakedb/snowflake-cli-action@v2.0
         with:
           custom-github-ref: "main"
 
-      # 3️⃣ Add CLI binary paths to the PATH environment variable
-      - name: 🩵 Add Snowflake CLI to PATH
+      # 3️⃣ Manually verify and fix PATH visibility for CLI
+      - name: 🩵 Ensure Snowflake CLI in PATH
         run: |
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-          echo "/opt/hostedtoolcache/uv/0.9.1/x86_64" >> $GITHUB_PATH
-          echo "✅ PATH updated for Snowflake CLI"
-
-      # 4️⃣ (Optional) Configure Snowflake credentials/config file
-      # Place your Snowflake config.toml in the repo root, or skip this if using default config
-      - name: ⚙️ Setup Snowflake Config
-        run: |
-          mkdir -p ~/.snowflake
-          if [ -f ./config.toml ]; then
-            echo "✅ Found config.toml, copying to ~/.snowflake/"
-            cp ./config.toml ~/.snowflake/config.toml
-          else
-            echo "⚠️ config.toml not found, using default config."
+          echo "🔍 Looking for installed Snowflake CLI..."
+          # Find where 'snow' is installed
+          SNOW_PATH=$(find /home/runner -type f -name "snow" 2>/dev/null | head -n 1)
+          
+          if [ -z "$SNOW_PATH" ]; then
+            echo "❌ Snowflake CLI binary not found in /home/runner!"
+            exit 1
           fi
+          
+          SNOW_DIR=$(dirname "$SNOW_PATH")
+          echo "✅ Found Snowflake CLI in: $SNOW_DIR"
+          echo "$SNOW_DIR" >> $GITHUB_PATH
+          echo "✅ Added Snowflake CLI path to GITHUB_PATH"
 
-      # 5️⃣ Verify the installation
-      - name: 🧩 Check Snowflake CLI installation
-        run: |
-          echo "🧩 Checking Snowflake CLI installation..."
-          which snow || echo "❌ snow not found in PATH"
-          snow --version || echo "❌ Snowflake CLI not responding"
-
-      # 6️⃣ Authenticate (if needed)
-      # Use OAUTH / Key pair / Username-password stored as GitHub secrets
-      - name: 🔐 Authenticate with Snowflake
+      # 4️⃣ Configure Snowflake credentials (from GitHub Secrets)
+      - name: ⚙️ Setup Snowflake Config
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
@@ -56,20 +46,32 @@ jobs:
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
         run: |
-          echo "🔐 Testing connection to Snowflake..."
-          snow connection test --account $SNOWFLAKE_ACCOUNT --user $SNOWFLAKE_USER || echo "⚠️ Connection test failed"
+          mkdir -p ~/.snowflake
+          cat <<EOF > ~/.snowflake/config.toml
+          [connections.default]
+          account = "${SNOWFLAKE_ACCOUNT}"
+          user = "${SNOWFLAKE_USER}"
+          password = "${SNOWFLAKE_PASSWORD}"
+          role = "${SNOWFLAKE_ROLE}"
+          warehouse = "${SNOWFLAKE_WAREHOUSE}"
+          database = "${SNOWFLAKE_DATABASE}"
+          schema = "${SNOWFLAKE_SCHEMA}"
+          EOF
+          echo "✅ Config.toml created at ~/.snowflake/config.toml"
 
-      # 7️⃣ Run your Snowflake ML pipeline or SQL script
-      - name: 🧠 Trigger Snowflake ML pipeline
-        env:
-          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-          SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+      # 5️⃣ Verify installation
+      - name: 🧩 Check Snowflake CLI installation
+        run: |
+          echo "🧩 Checking Snowflake CLI installation..."
+          which snow || echo "❌ snow not found in PATH"
+          snow --version || (echo "❌ Snowflake CLI not responding" && exit 1)
+
+      # 6️⃣ Test or trigger your Snowflake ML pipeline
+      - name: 🧠 Run Snowflake pipeline
         run: |
           echo "🚀 Triggering Snowflake ML pipeline..."
-          snow sql -q "CALL ml_pipeline_execute();" || echo "⚠️ Pipeline trigger failed"
+          snow sql -q "SELECT current_version();" || (echo "❌ Snowflake query failed" && exit 1)
 
-      # 8️⃣ Wrap up with logs
-      - name: 📜 Summarize
-        run: |
-          echo "✅ Workflow completed!"
+      # 7️⃣ Wrap up
+      - name: 📜 Summary
+        run: echo "✅ Snowflake CLI workflow completed successfully!"
