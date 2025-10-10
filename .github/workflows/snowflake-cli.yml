@@ -1,18 +1,31 @@
 name: Snowflake CLI Pipeline Trigger
+
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger only
 
 jobs:
   run-snowflake-cli:
     runs-on: ubuntu-latest
+    name: Trigger Snowflake ML Pipeline
 
     steps:
-      - name: Checkout
+      # ✅ Step 1: Checkout your repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ✅ Step 2: Setup Snowflake CLI
       - name: Setup Snowflake CLI
-        uses: snowflakedb/snowflake-cli-action@v2.0   # ← no custom-github-ref
+        uses: snowflakedb/snowflake-cli-action@v2.0
 
+      # ✅ Step 3: Verify CLI installation
+      - name: Verify Snowflake CLI Installation
+        run: |
+          echo "🧩 Checking Snowflake CLI installation..."
+          which snowsql || echo "❌ snowsql not found in PATH"
+          snowsql --version || echo "❌ Unable to fetch version"
+          echo "✅ Snowflake CLI installation verified."
+
+      # ✅ Step 4: Trigger Snowflake ML Pipeline Task
       - name: Execute Snowflake Task
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -22,13 +35,27 @@ jobs:
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
         run: |
-          snowflake sql -q "USE WAREHOUSE ${SNOWFLAKE_WAREHOUSE}; USE DATABASE ${SNOWFLAKE_DATABASE}; USE SCHEMA ${SNOWFLAKE_SCHEMA}; EXECUTE TASK TASK_1_DATA_INGESTION;"
+          echo "🚀 Triggering Snowflake ML pipeline..."
+          snowsql -q "USE WAREHOUSE ${SNOWFLAKE_WAREHOUSE}; USE DATABASE ${SNOWFLAKE_DATABASE}; USE SCHEMA ${SNOWFLAKE_SCHEMA}; EXECUTE TASK TASK_1_DATA_INGESTION;"
+          echo "✅ Pipeline triggered successfully!"
 
+      # ✅ Step 5: Download the latest ONNX model
       - name: Download latest ONNX model
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
         run: |
+          echo "📥 Downloading latest ONNX model from Snowflake stage..."
           mkdir -p models
-          snowflake sql -q "GET @ML_MODELS_STAGE/latest_model.onnx file://./models;"
+          snowsql -q "GET @ML_MODELS_STAGE/latest_model.onnx file://./models;"
+          echo "✅ Model downloaded to ./models directory."
+
+      # ✅ Step 6: Upload ONNX model as a workflow artifact
+      - name: Upload Model Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: downloaded-model
+          path: models/
+          retention-days: 7
