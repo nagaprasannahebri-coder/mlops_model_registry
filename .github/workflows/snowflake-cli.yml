@@ -1,7 +1,7 @@
 name: Snowflake CLI Pipeline Trigger
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger
 
 jobs:
   run-snowflake-cli:
@@ -18,15 +18,21 @@ jobs:
         with:
           custom-github-ref: "main"
 
-      # 3️⃣ Make sure CLI path is visible to next steps
+      # 3️⃣ Add Snowflake CLI to PATH (explicit directory)
       - name: 🩵 Add Snowflake CLI to PATH
         run: |
-          SNOW_PATH=$(find /home/runner -type f -name "snow" 2>/dev/null | head -n 1)
-          SNOW_DIR=$(dirname "$SNOW_PATH")
-          echo "$SNOW_DIR" >> $GITHUB_PATH
-          echo "✅ Added Snowflake CLI path: $SNOW_DIR"
+          echo "/home/runner/.local/share/uv/tools/snowflake-cli/bin" >> $GITHUB_PATH
+          echo "✅ Added Snowflake CLI path: /home/runner/.local/share/uv/tools/snowflake-cli/bin"
 
-      # 4️⃣ Configure Snowflake credentials securely
+      # 4️⃣ Debug step — confirm CLI location
+      - name: 🔍 Verify Snowflake CLI installation
+        run: |
+          echo "🔍 Searching for Snowflake CLI binary..."
+          find /home/runner/.local -type f -name "snow" | tee snowflake-paths.txt
+          echo "🧩 Checking version..."
+          snow --version
+
+      # 5️⃣ Configure Snowflake credentials and permissions
       - name: ⚙️ Setup Snowflake Config
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -49,26 +55,31 @@ jobs:
           schema = "${SNOWFLAKE_SCHEMA}"
           EOF
 
-          # 🔒 Fix permissions for Snowflake CLI
+          # 🔒 Fix permission issue (required by Snowflake CLI)
           chmod 600 ~/.snowflake/config.toml
-          echo "✅ Config.toml created and permissions fixed."
+          echo "✅ Config.toml created with secure permissions."
 
-      # 5️⃣ Verify installation
-      - name: 🧩 Check Snowflake CLI installation
+      # 6️⃣ Test Snowflake CLI connection and version
+      - name: 🧩 Test Snowflake CLI
+        env:
+          SF_SKIP_WARNING_FOR_READ_PERMISSIONS_ON_CONFIG_FILE: true
         run: |
-          echo "🧩 Checking Snowflake CLI installation..."
+          echo "🧠 Testing Snowflake CLI..."
           which snow
           snow --version
+          snow connection test || echo "⚠️ Connection test may need valid credentials."
 
-      # 6️⃣ Run your Snowflake ML pipeline or query
-      - name: 🧠 Run Snowflake pipeline
+      # 7️⃣ Run actual Snowflake pipeline or SQL query
+      - name: 🚀 Trigger Snowflake ML pipeline
         env:
           SF_SKIP_WARNING_FOR_READ_PERMISSIONS_ON_CONFIG_FILE: true
         run: |
           echo "🚀 Triggering Snowflake ML pipeline..."
-          snow sql -q "SELECT current_version();"
+          # Replace with your actual Snowflake SQL or stored procedure
+          snow sql -q "SELECT current_version();" || (echo "❌ Query failed" && exit 1)
 
-      # 7️⃣ Wrap up
+      # 8️⃣ Wrap up
       - name: 📜 Summary
-        run: echo "✅ Snowflake CLI workflow completed successfully!"
+        run: echo "✅ Snowflake CLI pipeline completed successfully!"
+
 
