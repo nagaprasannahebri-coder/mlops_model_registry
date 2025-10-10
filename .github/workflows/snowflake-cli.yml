@@ -9,15 +9,19 @@ jobs:
     name: Trigger Task → Verify Status → Export Latest Model → Upload Artifact
 
     steps:
-      # 1️⃣ Checkout
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install Snowflake CLI with ML support
-      - name: Install latest Snowflake CLI
+      # 2️⃣ Install Snowflake CLI with ML plugin support
+      - name: Install Snowflake CLI with ML plugin
         run: |
-          pip install --upgrade snowflake-cli-labs
+          echo "🧰 Installing latest Snowflake CLI with ML support..."
+          pip install --upgrade "snowflake-cli-labs[ml]"
+          echo "✅ Installed CLI version:"
           snow --version
+          echo "✅ Checking ML plugin availability..."
+          snow --help | grep -E "ml|model" || echo "⚠️ ML plugin not detected!"
 
       # 3️⃣ Configure Snowflake connection
       - name: Configure Snowflake credentials
@@ -42,23 +46,24 @@ jobs:
           schema = "${SNOWFLAKE_SCHEMA}"
           EOF
           chmod 600 ~/.snowflake/config.toml
-          echo "✅ Snowflake config.toml ready"
+          echo "✅ Snowflake config.toml ready."
 
       # 4️⃣ Trigger ML pipeline task
       - name: Trigger ML pipeline
         run: |
           echo "🚀 Executing ML pipeline..."
           snow sql -q "USE WAREHOUSE MLOPS_WH; USE DATABASE POWERCONSUMPTION; USE SCHEMA PUBLIC; EXECUTE TASK TASK_1_DATA_INGESTION;"
-          echo "✅ Task executed."
+          echo "✅ Task executed successfully."
 
       # 5️⃣ Wait & check status
       - name: Check task status
         run: |
-          echo "⏳ Waiting 15s before checking task status..."
+          echo "⏳ Waiting 15 seconds before checking task status..."
           sleep 15
           snow sql -q "USE DATABASE POWERCONSUMPTION; USE SCHEMA PUBLIC; SHOW TASKS LIKE 'TASK_1_DATA_INGESTION';" --format table
+          echo "✅ Task status checked."
 
-      # 6️⃣ Identify latest registered model (correct column)
+      # 6️⃣ Identify latest registered model
       - name: Identify latest registered model
         run: |
           echo "📦 Checking latest registered model..."
@@ -77,32 +82,34 @@ jobs:
           echo "✅ Latest registered model: $latest_model"
           echo "LATEST_MODEL=$latest_model" >> $GITHUB_ENV
 
-      # 7️⃣ Export model from registry
-      - name: Export latest model
+      # 7️⃣ Export latest model
+      - name: Export latest model from registry
         run: |
-          echo "📤 Exporting model $LATEST_MODEL ..."
+          echo "📤 Exporting model $LATEST_MODEL to ./models ..."
           snow ml model export "$LATEST_MODEL" --file-format onnx --output-dir ./models
-          echo "✅ Model exported."
+          echo "✅ Model exported successfully."
 
-      # 8️⃣ Verify export
+      # 8️⃣ Verify exported model
       - name: Verify exported model
         run: |
           if ls models/*.onnx 1>/dev/null 2>&1; then
             echo "✅ Model file(s) found:"
             ls -lh models
           else
-            echo "❌ No model exported!"
+            echo "❌ No ONNX model exported!"
             exit 1
           fi
 
-      # 9️⃣ Upload artifact
-      - name: Upload exported model
+      # 9️⃣ Upload artifact to GitHub
+      - name: Upload exported ONNX model
         uses: actions/upload-artifact@v4
         with:
           name: exported-onnx-model
           path: models/
           retention-days: 7
 
-      # ✅ Summary
+      # ✅ Final summary
       - name: Summary
-        run: echo "✅ Latest model exported from registry and uploaded successfully!"
+        run: |
+          echo "✅ End-to-end Snowflake pipeline executed successfully!"
+          echo "✅ Latest model exported from registry and uploaded as an artifact!"
