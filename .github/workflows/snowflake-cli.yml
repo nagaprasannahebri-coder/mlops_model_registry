@@ -1,4 +1,4 @@
-name: Snowflake CLI End-to-End ML Pipeline
+name: Snowflake Model Registry End-to-End Pipeline
 
 on:
   workflow_dispatch:  # Manual trigger only
@@ -6,24 +6,24 @@ on:
 jobs:
   run-snowflake-cli:
     runs-on: ubuntu-latest
-    name: Trigger ML Pipeline → Check Status → Fetch Latest Model → Upload Artifact
+    name: Trigger ML Pipeline → Verify Task → Export Latest Model → Upload Artifact
 
     steps:
       # 1️⃣ Checkout repository
       - name: 🚀 Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install Snowflake CLI (modern `snow` CLI)
+      # 2️⃣ Install Snowflake CLI (`snow`)
       - name: 🧰 Install Snowflake CLI
         uses: snowflakedb/snowflake-cli-action@v2.0
         with:
           custom-github-ref: "main"
 
-      # 3️⃣ Add Snowflake CLI to PATH
+      # 3️⃣ Add CLI to PATH
       - name: 🩵 Add Snowflake CLI to PATH
         run: echo "/home/runner/.local/share/uv/tools/snowflake-cli/bin" >> $GITHUB_PATH
 
-      # 4️⃣ Configure Snowflake connection (secure config.toml)
+      # 4️⃣ Configure Snowflake connection
       - name: ⚙️ Setup Snowflake Config
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -49,14 +49,12 @@ jobs:
           echo "✅ Snowflake config.toml created."
 
       # 5️⃣ Verify CLI installation
-      - name: 🔍 Verify Snowflake CLI Installation
+      - name: 🔍 Verify Snowflake CLI
         run: |
-          echo "🔍 Checking Snowflake CLI installation..."
-          which snow || { echo "❌ CLI not found in PATH"; exit 1; }
+          which snow
           snow --version
-          echo "✅ Snowflake CLI verified."
 
-      # 6️⃣ Trigger the ML pipeline task
+      # 6️⃣ Trigger Snowflake ML pipeline task
       - name: 🚀 Trigger Snowflake ML Pipeline
         run: |
           echo "🚀 Executing ML pipeline task..."
@@ -76,41 +74,50 @@ jobs:
           snow sql -q "USE DATABASE POWERCONSUMPTION; USE SCHEMA PUBLIC; SHOW TASKS LIKE 'TASK_1_DATA_INGESTION';" --format table
           echo "✅ Task status fetched successfully."
 
-      # 9️⃣ Fetch the latest ONNX model using true timestamp order
-      - name: 📥 Fetch and Download Latest ONNX Model
+      # 9️⃣ Identify latest registered model
+      - name: 🔍 Identify Latest Model in Registry
         run: |
-          echo "📜 Fetching latest ONNX model by actual timestamp..."
+          echo "📦 Checking latest registered model..."
           mkdir -p models
-          latest_model=$(snow sql -q "SELECT METADATA\$FILENAME FROM DIRECTORY(@ML_MODELS_STAGE) WHERE METADATA\$FILENAME LIKE '%.onnx' ORDER BY METADATA\$LAST_MODIFIED DESC LIMIT 1;" --format csv | tail -n +2 | tr -d '"')
+          latest_model=$(snow sql -q "SHOW MODELS IN SCHEMA PUBLIC;" --format csv | grep POWER_CONSUMPTION_MODEL | sort -t',' -k3,3r | head -n1 | cut -d',' -f1 | tr -d '"')
           if [ -z "$latest_model" ]; then
-            echo "❌ No ONNX files found in @ML_MODELS_STAGE!"
+            echo "❌ No models found in Model Registry!"
             exit 1
           fi
-          echo "✅ Latest model detected: $latest_model"
-          snow sql -q "GET @ML_MODELS_STAGE/$latest_model file://./models/"
-          echo "✅ Model downloaded successfully."
+          echo "✅ Latest registered model: $latest_model"
+          echo "LATEST_MODEL=$latest_model" >> $GITHUB_ENV
 
-      # 🔟 Verify model file presence
-      - name: 🔍 Verify Model Download
+      # 🔟 Export model from Snowflake Model Registry
+      - name: 📤 Export Latest Model from Registry
+        run: |
+          echo "📤 Exporting $LATEST_MODEL to ./models directory..."
+          snow ml model export $LATEST_MODEL --file-format onnx --output-dir ./models
+          echo "✅ Model exported successfully."
+
+      # 11️⃣ Verify export success
+      - name: 🔍 Verify Exported Model
         run: |
           if ls models/*.onnx 1> /dev/null 2>&1; then
-            echo "✅ Model file(s) found in ./models:"
+            echo "✅ Model file(s) found:"
             ls -lh models
           else
             echo "❌ No ONNX model files found in ./models!"
             exit 1
           fi
 
-      # 11️⃣ Upload model artifact to GitHub
-      - name: 📦 Upload ONNX Model Artifact
+      # 12️⃣ Upload exported model as artifact
+      - name: 📦 Upload Exported Model Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: downloaded-onnx-model
+          name: exported-onnx-model
           path: models/
           retention-days: 7
 
-      # ✅ Final Summary
+      # ✅ Final summary
       - name: 📜 Summary
-        run: echo "✅ End-to-end Snowflake pipeline executed, task verified, and latest model uploaded successfully!"
+        run: |
+          echo "✅ End-to-end pipeline completed!"
+          echo "✅ Task executed, model exported from registry, and artifact uploaded successfully."
+
 
 
