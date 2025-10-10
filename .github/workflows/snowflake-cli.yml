@@ -22,18 +22,13 @@ jobs:
         run: |
           echo "🧩 Checking Snowflake CLI installation..."
           if command -v snowflake &> /dev/null; then
-            echo "✅ Found new Snowflake CLI"
+            echo "✅ Found Snowflake CLI binary:"
+            which snowflake
             snowflake --version
-            echo "CLI_COMMAND=snowflake" >> $GITHUB_ENV
-          elif command -v snowsql &> /dev/null; then
-            echo "✅ Found legacy snowsql CLI"
-            snowsql --version
-            echo "CLI_COMMAND=snowsql" >> $GITHUB_ENV
           else
-            echo "❌ Neither 'snowflake' nor 'snowsql' found in PATH"
+            echo "❌ Snowflake CLI not found in PATH!"
             exit 1
           fi
-          echo "✅ Snowflake CLI installation verified."
 
       # ✅ Step 4: Trigger Snowflake ML Pipeline Task
       - name: Execute Snowflake Task
@@ -46,7 +41,7 @@ jobs:
           SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
         run: |
           echo "🚀 Triggering Snowflake ML pipeline..."
-          ${{ env.CLI_COMMAND }} sql -q "USE WAREHOUSE ${SNOWFLAKE_WAREHOUSE}; USE DATABASE ${SNOWFLAKE_DATABASE}; USE SCHEMA ${SNOWFLAKE_SCHEMA}; EXECUTE TASK TASK_1_DATA_INGESTION;"
+          snowflake sql -q "USE WAREHOUSE ${SNOWFLAKE_WAREHOUSE}; USE DATABASE ${SNOWFLAKE_DATABASE}; USE SCHEMA ${SNOWFLAKE_SCHEMA}; EXECUTE TASK TASK_1_DATA_INGESTION;"
           echo "✅ Pipeline triggered successfully!"
 
       # ✅ Step 5: Download the latest ONNX model
@@ -58,7 +53,7 @@ jobs:
         run: |
           echo "📥 Downloading latest ONNX model from Snowflake stage..."
           mkdir -p models
-          ${{ env.CLI_COMMAND }} sql -q "GET @ML_MODELS_STAGE/latest_model.onnx file://./models;"
+          snowflake sql -q "GET @ML_MODELS_STAGE/latest_model.onnx file://./models;"
           echo "✅ Model downloaded to ./models directory."
 
       # ✅ Step 6: Verify model file presence
@@ -72,7 +67,7 @@ jobs:
             exit 1
           fi
 
-      # ✅ Step 7: Upload ONNX model as an artifact
+      # ✅ Step 7: Upload ONNX model as a workflow artifact
       - name: Upload Model Artifact
         if: always()
         uses: actions/upload-artifact@v4
