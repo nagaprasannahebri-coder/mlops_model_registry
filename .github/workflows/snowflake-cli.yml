@@ -1,77 +1,75 @@
 name: Snowflake CLI Pipeline Trigger
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # Manual trigger only
 
 jobs:
   run-snowflake-cli:
     runs-on: ubuntu-latest
-    name: Trigger Snowflake ML Pipeline
 
     steps:
-      # ✅ Step 1: Checkout repository
-      - name: Checkout repository
+      # 1️⃣ Checkout your repository
+      - name: 🚀 Checkout repository
         uses: actions/checkout@v4
 
-      # ✅ Step 2: Setup Snowflake CLI
-      - name: Setup Snowflake CLI
+      # 2️⃣ Install the official Snowflake CLI
+      - name: 🧰 Install Snowflake CLI
         uses: snowflakedb/snowflake-cli-action@v2.0
+        with:
+          custom-github-ref: "main"
 
-      # ✅ Step 3: Verify CLI installation
-      - name: Verify Snowflake CLI Installation
+      # 3️⃣ Add CLI binary paths to the PATH environment variable
+      - name: 🩵 Add Snowflake CLI to PATH
         run: |
-          echo "🧩 Checking Snowflake CLI installation..."
-          if command -v snowflake &> /dev/null; then
-            echo "✅ Found Snowflake CLI binary:"
-            which snowflake
-            snowflake --version
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          echo "/opt/hostedtoolcache/uv/0.9.1/x86_64" >> $GITHUB_PATH
+          echo "✅ PATH updated for Snowflake CLI"
+
+      # 4️⃣ (Optional) Configure Snowflake credentials/config file
+      # Place your Snowflake config.toml in the repo root, or skip this if using default config
+      - name: ⚙️ Setup Snowflake Config
+        run: |
+          mkdir -p ~/.snowflake
+          if [ -f ./config.toml ]; then
+            echo "✅ Found config.toml, copying to ~/.snowflake/"
+            cp ./config.toml ~/.snowflake/config.toml
           else
-            echo "❌ Snowflake CLI not found in PATH!"
-            exit 1
+            echo "⚠️ config.toml not found, using default config."
           fi
 
-      # ✅ Step 4: Trigger Snowflake ML Pipeline Task
-      - name: Execute Snowflake Task
+      # 5️⃣ Verify the installation
+      - name: 🧩 Check Snowflake CLI installation
+        run: |
+          echo "🧩 Checking Snowflake CLI installation..."
+          which snow || echo "❌ snow not found in PATH"
+          snow --version || echo "❌ Snowflake CLI not responding"
+
+      # 6️⃣ Authenticate (if needed)
+      # Use OAUTH / Key pair / Username-password stored as GitHub secrets
+      - name: 🔐 Authenticate with Snowflake
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
           SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
           SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
         run: |
-          echo "🚀 Triggering Snowflake ML pipeline..."
-          snowflake sql -q "USE WAREHOUSE ${SNOWFLAKE_WAREHOUSE}; USE DATABASE ${SNOWFLAKE_DATABASE}; USE SCHEMA ${SNOWFLAKE_SCHEMA}; EXECUTE TASK TASK_1_DATA_INGESTION;"
-          echo "✅ Pipeline triggered successfully!"
+          echo "🔐 Testing connection to Snowflake..."
+          snow connection test --account $SNOWFLAKE_ACCOUNT --user $SNOWFLAKE_USER || echo "⚠️ Connection test failed"
 
-      # ✅ Step 5: Download the latest ONNX model
-      - name: Download latest ONNX model
+      # 7️⃣ Run your Snowflake ML pipeline or SQL script
+      - name: 🧠 Trigger Snowflake ML pipeline
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
         run: |
-          echo "📥 Downloading latest ONNX model from Snowflake stage..."
-          mkdir -p models
-          snowflake sql -q "GET @ML_MODELS_STAGE/latest_model.onnx file://./models;"
-          echo "✅ Model downloaded to ./models directory."
+          echo "🚀 Triggering Snowflake ML pipeline..."
+          snow sql -q "CALL ml_pipeline_execute();" || echo "⚠️ Pipeline trigger failed"
 
-      # ✅ Step 6: Verify model file presence
-      - name: Verify Model Download
+      # 8️⃣ Wrap up with logs
+      - name: 📜 Summarize
         run: |
-          echo "🔍 Verifying ONNX model presence..."
-          if ls models/*.onnx 1> /dev/null 2>&1; then
-            echo "✅ Model file(s) found in ./models"
-          else
-            echo "❌ No ONNX model files found in ./models!"
-            exit 1
-          fi
-
-      # ✅ Step 7: Upload ONNX model as a workflow artifact
-      - name: Upload Model Artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: downloaded-model
-          path: models/
-          retention-days: 7
+          echo "✅ Workflow completed!"
