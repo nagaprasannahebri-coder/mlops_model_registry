@@ -1,32 +1,30 @@
 name: Snowflake CLI End-to-End ML Pipeline
 
 on:
-  workflow_dispatch:  # Manual trigger only
+  workflow_dispatch:    # Manual trigger only
 
 jobs:
   run-snowflake-cli:
     runs-on: ubuntu-latest
-    name: Trigger ML Pipeline, Check Status, Download Model & Upload Artifact
+    name: Trigger ML Pipeline → Check Status → Download Model → Upload Artifact
 
     steps:
-      # 1️⃣ Checkout repository
-      - name: 🚀 Checkout repository
+      # 1️⃣ Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install Snowflake CLI (modern CLI: `snow`)
-      - name: 🧰 Install Snowflake CLI
+      # 2️⃣ Install modern Snowflake CLI (`snow`)
+      - name: Install Snowflake CLI
         uses: snowflakedb/snowflake-cli-action@v2.0
         with:
           custom-github-ref: "main"
 
-      # 3️⃣ Add Snowflake CLI to PATH
-      - name: 🩵 Add Snowflake CLI to PATH
-        run: |
-          echo "/home/runner/.local/share/uv/tools/snowflake-cli/bin" >> $GITHUB_PATH
-          echo "✅ Added Snowflake CLI path to environment."
+      # 3️⃣ Add CLI to PATH
+      - name: Add Snowflake CLI to PATH
+        run: echo "/home/runner/.local/share/uv/tools/snowflake-cli/bin" >> $GITHUB_PATH
 
-      # 4️⃣ Create secure Snowflake connection config
-      - name: ⚙️ Setup Snowflake Config
+      # 4️⃣ Create secure config
+      - name: Configure Snowflake connection
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
@@ -48,70 +46,64 @@ jobs:
           schema = "${SNOWFLAKE_SCHEMA}"
           EOF
           chmod 600 ~/.snowflake/config.toml
-          echo "✅ Snowflake config.toml created."
+          echo "✅ Config.toml created."
 
-      # 5️⃣ Verify CLI installation
-      - name: 🔍 Verify Snowflake CLI Installation
+      # 5️⃣ Verify installation
+      - name: Verify Snowflake CLI
         run: |
-          echo "🔍 Checking Snowflake CLI installation..."
-          which snow || { echo "❌ CLI not found in PATH"; exit 1; }
+          which snow
           snow --version
-          echo "✅ Snowflake CLI verified."
 
-      # 6️⃣ Trigger the ML pipeline task
-      - name: 🚀 Trigger Snowflake ML Pipeline
+      # 6️⃣ Trigger ML pipeline task
+      - name: Trigger ML pipeline
         run: |
           echo "🚀 Executing ML pipeline task..."
           snow sql -q "USE WAREHOUSE MLOPS_WH; USE DATABASE POWERCONSUMPTION; USE SCHEMA PUBLIC; EXECUTE TASK TASK_1_DATA_INGESTION;"
-          echo "✅ ML pipeline triggered successfully!"
+          echo "✅ Task executed."
 
-      # 7️⃣ Wait for task completion
-      - name: ⏳ Wait for pipeline completion
+      # 7️⃣ Wait then check task status
+      - name: Check task status
         run: |
-          echo "⏳ Waiting 15 seconds before checking task status..."
+          echo "⏳ Waiting 15 s before checking task status..."
           sleep 15
-
-      # 8️⃣ Check task status from Snowflake
-      - name: 📊 Check Task Execution Status
-        run: |
-          echo "📊 Checking task execution status in Snowflake..."
+          echo "📊 Task status:"
           snow sql -q "USE DATABASE POWERCONSUMPTION; USE SCHEMA PUBLIC; SHOW TASKS LIKE 'TASK_1_DATA_INGESTION';" --format table
-          echo "✅ Task status fetched successfully."
 
-      # 9️⃣ Download the latest ONNX model from Snowflake Stage
-      - name: 📥 Download latest ONNX model
+      # 8️⃣ List and download latest ONNX model
+      - name: Download latest ONNX model
         run: |
-          echo "📜 Listing available models on stage..."
+          echo "📜 Listing stage files..."
           mkdir -p models
+          # Correct flag: --format
           latest_model=$(snow sql -q "LIST @ML_MODELS_STAGE" --format csv | grep '.onnx' | sort -t',' -k4,4r | head -n 1 | cut -d',' -f1)
           if [ -z "$latest_model" ]; then
             echo "❌ No ONNX files found in @ML_MODELS_STAGE!"
             exit 1
           fi
-          echo "✅ Found latest model: $latest_model"
-          echo "📥 Downloading model..."
+          echo "✅ Latest model: $latest_model"
           snow sql -q "GET @$latest_model file://./models/"
-          echo "✅ Model downloaded to ./models directory."
+          echo "✅ Model downloaded."
 
-      # 🔟 Verify model file presence
-      - name: 🔍 Verify Model Download
+      # 9️⃣ Verify presence
+      - name: Verify model download
         run: |
-          if ls models/*.onnx 1> /dev/null 2>&1; then
-            echo "✅ Model file(s) found in ./models:"
+          if ls models/*.onnx 1>/dev/null 2>&1; then
+            echo "✅ Model files present:"
             ls -lh models
           else
-            echo "❌ No ONNX model files found in ./models!"
+            echo "❌ No model found!"
             exit 1
           fi
 
-      # 11️⃣ Upload model as artifact
-      - name: 📦 Upload Model Artifact
+      # 🔟 Upload artifact
+      - name: Upload ONNX model artifact
         uses: actions/upload-artifact@v4
         with:
           name: downloaded-onnx-model
           path: models/
           retention-days: 7
 
-      # ✅ Final Summary
-      - name: 📜 Summary
-        run: echo "✅ End-to-end Snowflake pipeline executed, task verified, and model uploaded successfully!"
+      # ✅ Summary
+      - name: Summary
+        run: echo "✅ End-to-end Snowflake pipeline finished successfully."
+
