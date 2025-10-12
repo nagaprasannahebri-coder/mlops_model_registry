@@ -6,24 +6,24 @@ on:
 jobs:
   run-snowflake-cli:
     runs-on: ubuntu-latest
-    name: Trigger Task → Verify Status → Export Latest Model → Upload Artifact
+    name: Trigger Tasks → Fetch Latest Model from Registry → Export → Upload
 
     steps:
       # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install Snowflake CLI with ML plugin support
-      - name: Install Snowflake CLI with ML plugin
+      # 2️⃣ Install Snowflake CLI (Dev build with ML plugin)
+      - name: Install Snowflake CLI with ML support
         run: |
-          echo "🧰 Installing latest Snowflake CLI with ML support..."
-          pip install --upgrade "snowflake-cli-labs[ml]"
+          echo "🧰 Installing latest Snowflake CLI dev build..."
+          pip install --upgrade git+https://github.com/snowflakedb/snowflake-cli.git@main
           echo "✅ Installed CLI version:"
           snow --version
           echo "✅ Checking ML plugin availability..."
-          snow --help | grep -E "ml|model" || echo "⚠️ ML plugin not detected!"
+          snow --help | grep -E "ml|model" || echo "⚠️ ML plugin may not be fully loaded!"
 
-      # 3️⃣ Configure Snowflake connection
+      # 3️⃣ Configure Snowflake credentials
       - name: Configure Snowflake credentials
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -48,27 +48,26 @@ jobs:
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Snowflake config.toml ready."
 
-      # 4️⃣ Trigger ML pipeline task
-      - name: Trigger ML pipeline
+      # 4️⃣ Trigger ML pipeline (execute root task)
+      - name: Trigger Snowflake ML pipeline
         run: |
-          echo "🚀 Executing ML pipeline..."
+          echo "🚀 Executing Snowflake ML pipeline..."
           snow sql -q "USE WAREHOUSE MLOPS_WH; USE DATABASE POWERCONSUMPTION; USE SCHEMA PUBLIC; EXECUTE TASK TASK_1_DATA_INGESTION;"
-          echo "✅ Task executed successfully."
+          echo "✅ Task chain triggered successfully."
 
-      # 5️⃣ Wait & check status
-      - name: Check task status
+      # 5️⃣ Wait and verify task status
+      - name: Verify task execution
         run: |
           echo "⏳ Waiting 15 seconds before checking task status..."
           sleep 15
           snow sql -q "USE DATABASE POWERCONSUMPTION; USE SCHEMA PUBLIC; SHOW TASKS LIKE 'TASK_1_DATA_INGESTION';" --format table
-          echo "✅ Task status checked."
+          echo "✅ Task status verified."
 
       # 6️⃣ Identify latest registered model
-      - name: Identify latest registered model
+      - name: Identify latest model from registry
         run: |
-          echo "📦 Checking latest registered model..."
+          echo "📦 Identifying latest registered model..."
           mkdir -p models
-          # Sort by created_on (col 1) descending, extract name (col 2)
           latest_model=$(snow sql -q "SHOW MODELS IN SCHEMA PUBLIC;" --format csv \
             | grep POWER_CONSUMPTION_MODEL \
             | sort -t',' -k1,1r \
@@ -79,18 +78,32 @@ jobs:
             echo "❌ No models found in registry!"
             exit 1
           fi
-          echo "✅ Latest registered model: $latest_model"
+          echo "✅ Latest model: $latest_model"
           echo "LATEST_MODEL=$latest_model" >> $GITHUB_ENV
 
-      # 7️⃣ Export latest model
-      - name: Export latest model from registry
+      # 7️⃣ Try exporting via CLI, fallback to SQL if CLI plugin unavailable
+      - name: Export model from registry
         run: |
-          echo "📤 Exporting model $LATEST_MODEL to ./models ..."
-          snow ml model export "$LATEST_MODEL" --file-format onnx --output-dir ./models
-          echo "✅ Model exported successfully."
+          echo "📤 Attempting to export model $LATEST_MODEL..."
+          mkdir -p models
+          if snow ml --help >/dev/null 2>&1; then
+            echo "✅ ML plugin detected. Exporting directly via CLI..."
+            snow ml model export "$LATEST_MODEL" --file-format onnx --output-dir ./models
+          else
+            echo "⚠️ snow ml not found. Falling back to SYSTEM\$EXPORT_MODEL..."
+            snow sql -q "USE DATABASE POWERCONSUMPTION; USE SCHEMA PUBLIC; CALL SYSTEM\$EXPORT_MODEL('$LATEST_MODEL', '@ML_MODELS_STAGE');"
+            echo "📥 Fetching latest ONNX model from @ML_MODELS_STAGE..."
+            latest_file=$(snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format csv | sort -t',' -k4,4r | head -n1 | cut -d',' -f1)
+            if [ -z "$latest_file" ]; then
+              echo "❌ No ONNX file found in stage!"
+              exit 1
+            fi
+            snow sql -q "GET @$latest_file file://./models/"
+          fi
+          echo "✅ Model export complete."
 
-      # 8️⃣ Verify exported model
-      - name: Verify exported model
+      # 8️⃣ Verify exported model files
+      - name: Verify exported ONNX model
         run: |
           if ls models/*.onnx 1>/dev/null 2>&1; then
             echo "✅ Model file(s) found:"
@@ -100,16 +113,16 @@ jobs:
             exit 1
           fi
 
-      # 9️⃣ Upload artifact to GitHub
-      - name: Upload exported ONNX model
+      # 9️⃣ Upload model artifact
+      - name: Upload exported model
         uses: actions/upload-artifact@v4
         with:
           name: exported-onnx-model
           path: models/
           retention-days: 7
 
-      # ✅ Final summary
+      # 🔟 Final summary
       - name: Summary
         run: |
-          echo "✅ End-to-end Snowflake pipeline executed successfully!"
-          echo "✅ Latest model exported from registry and uploaded as an artifact!"
+          echo "✅ End-to-end Snowflake Model Registry pipeline completed!"
+          echo "✅ Latest model exported and uploaded as artifact!"
