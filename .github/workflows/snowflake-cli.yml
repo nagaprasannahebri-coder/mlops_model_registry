@@ -1,4 +1,4 @@
-name: Snowflake End-to-End Model Pipeline (Stage Export, Robust)
+name: Snowflake End-to-End Model Pipeline (Stage Export - JSON Version)
 
 on:
   workflow_dispatch:
@@ -9,18 +9,20 @@ jobs:
     name: Trigger Tasks → Wait for Training → Fetch Latest ONNX → Upload
 
     steps:
-      # 1) Checkout
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2) Install Snowflake CLI (stable)
+      # 2️⃣ Install Snowflake CLI + jq
       - name: Install Snowflake CLI
         run: |
-          echo "🧰 Installing Snowflake CLI..."
+          echo "🧰 Installing Snowflake CLI and jq..."
+          sudo apt-get update -y && sudo apt-get install -y jq
           pip install --upgrade snowflake-cli-labs
           snow --version
+          jq --version
 
-      # 3) Configure Snowflake credentials
+      # 3️⃣ Configure Snowflake credentials
       - name: Configure Snowflake credentials
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -45,17 +47,22 @@ jobs:
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Snowflake credentials configured."
 
-      # 4) Trigger the ROOT task so the whole chain runs (1->2->3->4)
+      # 4️⃣ Trigger the ROOT task so the full chain runs (1→2→3→4)
       - name: Trigger Snowflake ML pipeline (root task)
         run: |
-          echo "🚀 Executing pipeline (root task) ..."
-          snow sql -q "USE WAREHOUSE MLOPS_WH; USE DATABASE POWERCONSUMPTION; USE SCHEMA PUBLIC; EXECUTE TASK TASK_1_DATA_INGESTION;"
+          echo "🚀 Executing pipeline (root task)..."
+          snow sql -q "
+            USE WAREHOUSE MLOPS_WH;
+            USE DATABASE POWERCONSUMPTION;
+            USE SCHEMA PUBLIC;
+            EXECUTE TASK TASK_1_DATA_INGESTION;
+          "
           echo "✅ Root task executed."
 
-      # 5) Poll until TASK_3_MODEL_TRAINING succeeded recently (last 45 minutes)
+      # 5️⃣ Poll until TASK_3_MODEL_TRAINING succeeded recently
       - name: Wait for TASK_3_MODEL_TRAINING to succeed
         run: |
-          echo "⏳ Polling for TASK_3_MODEL_TRAINING success (up to ~10 minutes)..."
+          echo "⏳ Waiting for TASK_3_MODEL_TRAINING success..."
           ATTEMPTS=20
           SLEEP_SEC=30
           i=1
@@ -67,8 +74,8 @@ jobs:
               ))
               WHERE name = 'TASK_3_MODEL_TRAINING'
                 AND state = 'SUCCEEDED'
-            " --format tsv | tail -n +2 | tr -d '[:space:]')
-            echo "🔎 success_count(last 45m) = ${count}"
+            " --format json | jq -r '.data[0].C // 0')
+            echo "🔎 success_count(last 45 m) = ${count}"
             if [ "${count}" != "0" ]; then
               echo "✅ Training task succeeded recently."
               break
@@ -82,37 +89,35 @@ jobs:
             exit 1
           fi
 
-      # 6) Dump stage listing (debug)
+      # 6️⃣ Debug listing
       - name: List ONNX files in @ML_MODELS_STAGE (debug)
         run: |
-          echo "📜 Stage listing:"
-          snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format table || true
+          echo "📜 Stage listing (JSON):"
+          snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format json | jq '.data'
 
-      # 7) Download the newest ONNX from stage (skip CSV header, strip stage prefix)
-      - name: Download latest ONNX model from stage
+      # 7️⃣ Download newest ONNX using JSON parsing
+      - name: Download latest ONNX model from stage (JSON)
         run: |
           echo "📥 Fetching latest ONNX model from @ML_MODELS_STAGE..."
           mkdir -p models
-          # Get newest by last_modified (column 4), skip header
-          raw_path=$(snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format csv \
-            | tail -n +2 \
-            | sort -t',' -k4,4r \
-            | head -n1 \
-            | cut -d',' -f1)
-          if [ -z "$raw_path" ]; then
-            echo "❌ No ONNX files found in @ML_MODELS_STAGE!"
+          latest_file=$(snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format json \
+            | jq -r '[.data[] | {name: .name, last_modified: .last_modified}] 
+                     | sort_by(.last_modified) 
+                     | last 
+                     | .name')
+          if [ -z "$latest_file" ] || [ "$latest_file" = "null" ]; then
+            echo "❌ No ONNX file found in @ML_MODELS_STAGE!"
             exit 1
           fi
-          # Some Snowflake outputs include 'ml_models_stage/' prefix in the path — strip if present
-          file_rel="${raw_path#ml_models_stage/}"
-          echo "✅ Latest file (relative): $file_rel"
+          file_rel="${latest_file#ml_models_stage/}"
+          echo "✅ Latest ONNX file: $file_rel"
           snow sql -q "GET @ML_MODELS_STAGE/$file_rel file://./models/"
-          echo "✅ Model downloaded into ./models"
+          echo "✅ Model downloaded to ./models"
 
-      # 8) Verify downloaded file(s)
+      # 8️⃣ Verify file(s)
       - name: Verify downloaded model
         run: |
-          echo "🔎 Verifying downloaded artifacts..."
+          echo "🔎 Verifying downloaded ONNX..."
           ls -lh models || true
           if ! ls models/*.onnx 1>/dev/null 2>&1; then
             echo "❌ No .onnx files were downloaded."
@@ -120,7 +125,7 @@ jobs:
           fi
           echo "✅ ONNX model present."
 
-      # 9) Upload as GitHub artifact
+      # 9️⃣ Upload artifact
       - name: Upload exported ONNX model
         uses: actions/upload-artifact@v4
         with:
@@ -128,10 +133,11 @@ jobs:
           path: models/
           retention-days: 7
 
-      # 10) Summary
+      # 🔟 Summary
       - name: Summary
         run: |
           echo "✅ End-to-end pipeline completed."
-          echo "✅ Latest model trained by TASK_3 and fetched from @ML_MODELS_STAGE."
+          echo "✅ Latest model trained by TASK_3 and fetched (JSON-based) from @ML_MODELS_STAGE."
+
 
 
