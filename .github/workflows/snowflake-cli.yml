@@ -6,18 +6,19 @@ on:
 jobs:
   run-snowflake-cli:
     runs-on: ubuntu-latest
-    name: Trigger Tasks → Fetch Latest Model from Stage → Upload
+    name: Trigger Tasks → Fetch Latest ONNX → Upload Artifact
 
     steps:
       # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install Snowflake CLI (dev build optional)
+      # 2️⃣ Install Snowflake CLI (stable build)
       - name: Install Snowflake CLI
         run: |
           echo "🧰 Installing Snowflake CLI..."
           pip install --upgrade "snowflake-cli-labs"
+          echo "✅ Installed CLI version:"
           snow --version
 
       # 3️⃣ Configure Snowflake credentials
@@ -45,14 +46,14 @@ jobs:
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Snowflake credentials configured."
 
-      # 4️⃣ Trigger ML pipeline
+      # 4️⃣ Trigger the Snowflake ML pipeline (root task)
       - name: Trigger Snowflake ML pipeline
         run: |
           echo "🚀 Executing pipeline..."
           snow sql -q "USE WAREHOUSE MLOPS_WH; USE DATABASE POWERCONSUMPTION; USE SCHEMA PUBLIC; EXECUTE TASK TASK_1_DATA_INGESTION;"
-          echo "✅ Tasks executed successfully."
+          echo "✅ Pipeline triggered successfully."
 
-      # 5️⃣ Wait and verify
+      # 5️⃣ Wait and verify task status
       - name: Check task status
         run: |
           echo "⏳ Waiting 15 seconds before checking task status..."
@@ -60,22 +61,44 @@ jobs:
           snow sql -q "USE DATABASE POWERCONSUMPTION; USE SCHEMA PUBLIC; SHOW TASKS LIKE 'TASK_1_DATA_INGESTION';" --format table
           echo "✅ Task chain verified."
 
-      # 6️⃣ Download latest ONNX model from stage
-      - name: Download latest ONNX model from @ML_MODELS_STAGE
+      # 6️⃣ Identify latest model in registry (for reference)
+      - name: Identify latest registered model
         run: |
-          echo "📥 Fetching latest ONNX model from stage..."
+          echo "📦 Finding latest registered model..."
+          latest_model=$(snow sql -q "SHOW MODELS IN SCHEMA PUBLIC;" --format csv \
+            | tail -n +2 \
+            | grep POWER_CONSUMPTION_MODEL \
+            | sort -t',' -k1,1r \
+            | head -n1 \
+            | cut -d',' -f2 \
+            | tr -d '"')
+          if [ -z "$latest_model" ]; then
+            echo "❌ No models found in registry!"
+            exit 1
+          fi
+          echo "✅ Latest registered model: $latest_model"
+          echo "LATEST_MODEL=$latest_model" >> $GITHUB_ENV
+
+      # 7️⃣ Download latest ONNX model from @ML_MODELS_STAGE
+      - name: Download latest ONNX model from stage
+        run: |
+          echo "📥 Fetching latest ONNX model from @ML_MODELS_STAGE..."
           mkdir -p models
-          latest_file=$(snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format csv | sort -t',' -k4,4r | head -n1 | cut -d',' -f1)
+          latest_file=$(snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format csv \
+            | tail -n +2 \
+            | sort -t',' -k4,4r \
+            | head -n1 \
+            | cut -d',' -f1)
           if [ -z "$latest_file" ]; then
             echo "❌ No ONNX file found in @ML_MODELS_STAGE!"
             exit 1
           fi
           echo "✅ Latest file: $latest_file"
-          snow sql -q "GET @$latest_file file://./models/"
+          snow sql -q "GET @ML_MODELS_STAGE/$latest_file file://./models/"
           echo "✅ Model downloaded into ./models"
 
-      # 7️⃣ Verify exported model
-      - name: Verify model artifact
+      # 8️⃣ Verify downloaded model
+      - name: Verify downloaded model
         run: |
           if ls models/*.onnx 1>/dev/null 2>&1; then
             echo "✅ Model file(s) found:"
@@ -85,7 +108,7 @@ jobs:
             exit 1
           fi
 
-      # 8️⃣ Upload as GitHub artifact
+      # 9️⃣ Upload as GitHub artifact
       - name: Upload exported ONNX model
         uses: actions/upload-artifact@v4
         with:
@@ -93,8 +116,8 @@ jobs:
           path: models/
           retention-days: 7
 
-      # ✅ Final summary
+      # 🔟 Final summary
       - name: Summary
         run: |
-          echo "✅ Pipeline completed successfully!"
-          echo "✅ Model downloaded from @ML_MODELS_STAGE and uploaded as artifact!"
+          echo "✅ End-to-end Snowflake pipeline completed successfully!"
+          echo "✅ Latest model fetched from @ML_MODELS_STAGE and uploaded as an artifact!"
