@@ -121,3 +121,4 @@ jobs:
         run: |
           echo "✅ End-to-end Snowflake pipeline completed successfully!"
           echo "✅ Latest model fetched from @ML_MODELS_STAGE and uploaded as an artifact!"
+
