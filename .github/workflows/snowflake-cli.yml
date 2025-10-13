@@ -1,9 +1,9 @@
-name: Snowflake End-to-End Model Pipeline (JSON Version - Auto Trigger)
+name: Snowflake End-to-End Model Pipeline (SQL Sort Version)
 
 on:
   push:
     branches:
-      - main   # 🔁 Change this to your desired branch (e.g. "dev" or "*")
+      - main   # ✅ Auto-trigger when code is pushed to main
 
 jobs:
   run-snowflake-cli:
@@ -15,14 +15,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install Snowflake CLI and jq
+      # 2️⃣ Install Snowflake CLI
       - name: Install Snowflake CLI
         run: |
-          echo "🧰 Installing Snowflake CLI and jq..."
-          sudo apt-get update -y && sudo apt-get install -y jq
+          echo "🧰 Installing Snowflake CLI..."
           pip install --upgrade snowflake-cli-labs
           snow --version
-          jq --version
 
       # 3️⃣ Configure Snowflake credentials
       - name: Configure Snowflake credentials
@@ -49,7 +47,7 @@ jobs:
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Snowflake credentials configured."
 
-      # 4️⃣ Trigger the root task so the entire chain (1→2→3→4) runs
+      # 4️⃣ Trigger the root task (chain 1→2→3→4)
       - name: Trigger Snowflake ML pipeline (root task)
         run: |
           echo "🚀 Executing pipeline (root task)..."
@@ -76,7 +74,7 @@ jobs:
               ))
               WHERE name = 'TASK_3_MODEL_TRAINING'
                 AND state = 'SUCCEEDED';
-            " --format json | jq -r '(try .data catch .) | .[0].C // 0')
+            " --format csv | tail -n +2 | cut -d',' -f1)
             echo "🔎 success_count(last 45m) = ${count}"
             if [ "${count}" != "0" ]; then
               echo "✅ Training task succeeded recently."
@@ -91,32 +89,35 @@ jobs:
             exit 1
           fi
 
-      # 6️⃣ Debug listing
+      # 6️⃣ List stage files
       - name: List ONNX files in @ML_MODELS_STAGE (debug)
         run: |
-          echo "📜 Stage listing (JSON):"
-          snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format json | jq '.data'
+          echo "📜 Stage listing:"
+          snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format table
 
-      # 7️⃣ Download newest ONNX using JSON parsing
-      - name: Download latest ONNX model from stage (JSON)
+      # 7️⃣ Fetch newest ONNX (Snowflake SQL sorts it)
+      - name: Download newest ONNX model (SQL-based sort)
         run: |
-          echo "📥 Fetching latest ONNX model from @ML_MODELS_STAGE..."
+          echo "📥 Fetching latest ONNX model using Snowflake sort..."
           mkdir -p models
-          latest_file=$(snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format json \
-            | jq -r '[.data[] | {name: .name, last_modified: .last_modified}] 
-                     | sort_by(.last_modified) 
-                     | last 
-                     | .name')
-          if [ -z "$latest_file" ] || [ "$latest_file" = "null" ]; then
-            echo "❌ No ONNX file found in @ML_MODELS_STAGE!"
+          # 1. List files
+          snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format csv > stage_list.csv
+          # 2. Get latest file name (Snowflake sorts via RESULT_SCAN)
+          latest_file=$(snow sql -q "
+            SELECT name FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)))
+            ORDER BY last_modified DESC
+            LIMIT 1;
+          " --format csv | tail -n +2 | cut -d',' -f1)
+          if [ -z "$latest_file" ]; then
+            echo "❌ No ONNX files found in @ML_MODELS_STAGE!"
             exit 1
           fi
-          file_rel="${latest_file#ml_models_stage/}"
-          echo "✅ Latest ONNX file: $file_rel"
-          snow sql -q "GET @ML_MODELS_STAGE/$file_rel file://./models/"
-          echo "✅ Model downloaded to ./models"
+          echo "✅ Latest ONNX file: $latest_file"
+          # 3. Download the latest model
+          snow sql -q "GET @ML_MODELS_STAGE/$latest_file file://./models/"
+          echo "✅ Model downloaded into ./models"
 
-      # 8️⃣ Verify file(s)
+      # 8️⃣ Verify model
       - name: Verify downloaded model
         run: |
           echo "🔎 Verifying downloaded ONNX..."
@@ -139,8 +140,4 @@ jobs:
       - name: Summary
         run: |
           echo "✅ End-to-end pipeline completed."
-          echo "✅ Latest model trained by TASK_3 and fetched (JSON-based) from @ML_MODELS_STAGE."
-
-
-
-
+          echo "✅ Latest model trained by TASK_3 and fetched (SQL-based sort) from @ML_MODELS_STAGE."
