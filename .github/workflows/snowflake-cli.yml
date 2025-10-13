@@ -1,7 +1,9 @@
-name: Snowflake End-to-End Model Pipeline (Stage Export - JSON Version)
+name: Snowflake End-to-End Model Pipeline (JSON Version - Auto Trigger)
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main   # 🔁 Change this to your desired branch (e.g. "dev" or "*")
 
 jobs:
   run-snowflake-cli:
@@ -13,7 +15,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install Snowflake CLI + jq
+      # 2️⃣ Install Snowflake CLI and jq
       - name: Install Snowflake CLI
         run: |
           echo "🧰 Installing Snowflake CLI and jq..."
@@ -47,7 +49,7 @@ jobs:
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Snowflake credentials configured."
 
-      # 4️⃣ Trigger the ROOT task so the full chain runs (1→2→3→4)
+      # 4️⃣ Trigger the root task so the entire chain (1→2→3→4) runs
       - name: Trigger Snowflake ML pipeline (root task)
         run: |
           echo "🚀 Executing pipeline (root task)..."
@@ -68,14 +70,14 @@ jobs:
           i=1
           while [ $i -le $ATTEMPTS ]; do
             count=$(snow sql -q "
-              SELECT COUNT(*) AS c
+              SELECT COUNT(*) AS C
               FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(
                 SCHEDULED_TIME_RANGE_START => DATEADD('minute', -45, CURRENT_TIMESTAMP())
               ))
               WHERE name = 'TASK_3_MODEL_TRAINING'
-                AND state = 'SUCCEEDED'
-            " --format json | jq -r '.data[0].C // 0')
-            echo "🔎 success_count(last 45 m) = ${count}"
+                AND state = 'SUCCEEDED';
+            " --format json | jq -r '(try .data catch .) | .[0].C // 0')
+            echo "🔎 success_count(last 45m) = ${count}"
             if [ "${count}" != "0" ]; then
               echo "✅ Training task succeeded recently."
               break
@@ -138,6 +140,7 @@ jobs:
         run: |
           echo "✅ End-to-end pipeline completed."
           echo "✅ Latest model trained by TASK_3 and fetched (JSON-based) from @ML_MODELS_STAGE."
+
 
 
 
