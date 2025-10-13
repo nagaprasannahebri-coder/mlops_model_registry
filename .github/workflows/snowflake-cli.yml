@@ -6,7 +6,7 @@ on:
       - main
 
 permissions:
-  contents: write  # Required for pushing commits back to the repo
+  contents: write  # allows committing the model back to the repo
 
 jobs:
   sync-snowflake-model:
@@ -51,7 +51,7 @@ jobs:
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Snowflake connection configured successfully."
 
-      # 4️⃣ (Optional) Trigger training pipeline task
+      # 4️⃣ Trigger training pipeline task
       - name: Trigger Snowflake training pipeline
         run: |
           echo "🚀 Executing root Snowflake ML pipeline..."
@@ -87,7 +87,7 @@ jobs:
             exit 1
           fi
 
-      # 6️⃣ List all ONNX models
+      # 6️⃣ List ONNX models in stage
       - name: List ONNX models in Snowflake stage
         run: |
           echo "📜 Listing ONNX models from stage..."
@@ -126,21 +126,25 @@ jobs:
 
           echo "✅ Latest file: $latest_file"
 
-          # 2️⃣ Download it locally
-          snow sql -q "GET @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE/$latest_file file://staged_models/"
+          # 2️⃣ Clean duplicate prefix (important!)
+          clean_file=${latest_file#ml_models_stage/}
+          echo "🧩 Clean file path: $clean_file"
+
+          # 3️⃣ Download the cleaned file
+          snow sql -q "GET @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE/$clean_file file://staged_models/"
           echo "✅ Model downloaded to staged_models/"
 
-          # 3️⃣ Commit and push model to GitHub
+          # 4️⃣ Commit and push model to GitHub
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
           git add staged_models/
-          git commit -m "Auto-sync ONNX model from Snowflake stage ($latest_file)" || echo "No new model changes"
+          git commit -m "Auto-sync ONNX model from Snowflake stage ($clean_file)" || echo "No new model changes"
           git push
           echo "✅ Model file pushed successfully!"
 
-      # 8️⃣ Summary
+      # 8️⃣ Final summary
       - name: Summary
         run: |
-          echo "✅ End-to-end pipeline completed successfully!"
+          echo "✅ End-to-end Snowflake pipeline completed successfully!"
           echo "✅ Latest ONNX model synced to GitHub under staged_models/ directory."
