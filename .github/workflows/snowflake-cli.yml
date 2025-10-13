@@ -1,4 +1,4 @@
-name: Snowflake End-to-End Model Pipeline (Query ID Fix)
+name: Snowflake End-to-End Model Pipeline (Auto JSON Fix)
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
       - name: Install Snowflake CLI
         run: |
           echo "🧰 Installing Snowflake CLI..."
-          pip install --upgrade snowflake-cli-labs
+          pip install --upgrade snowflake-cli-labs jq
           snow --version
 
       # 3️⃣ Configure Snowflake credentials
@@ -102,25 +102,30 @@ jobs:
             LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
           " --format table
 
-           # 8️⃣ Fetch newest ONNX model (query_id fix)
+      # 8️⃣ Fetch newest ONNX model (query_id auto-detect fix)
       - name: Download newest ONNX model
         run: |
-          echo "📥 Fetching latest ONNX model (query_id approach)..."
+          echo "📥 Fetching latest ONNX model (auto-detect JSON)..."
           mkdir -p models
 
-          # Step 1: Run LIST and capture query ID correctly
+          # Step 1: Run LIST and capture query ID safely
           query_id=$(snow sql -q "
             USE DATABASE POWERCONSUMPTION;
             USE SCHEMA PUBLIC;
             LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
-          " --format json | jq -r '.query_id')
+          " --format json | jq -r 'if type=="array" then .[0].query_id else .query_id end')
 
           if [ -z "$query_id" ] || [ "$query_id" == "null" ]; then
             echo "❌ Failed to fetch query ID from LIST command!"
-            echo "🔍 Debug output below:"
-            snow sql -q "SELECT CURRENT_TIMESTAMP();" --format json
+            echo "🔍 Debugging Snowflake JSON output for inspection:"
+            snow sql -q "
+              USE DATABASE POWERCONSUMPTION;
+              USE SCHEMA PUBLIC;
+              LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
+            " --format json | head -n 50
             exit 1
           fi
+
           echo "✅ Captured query ID: $query_id"
 
           # Step 2: Run RESULT_SCAN using captured query ID
@@ -138,10 +143,8 @@ jobs:
 
           clean_file=${latest_file#ml_models_stage/}
           echo "✅ Latest ONNX file: $clean_file"
-
           snow sql -q "GET @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE/$clean_file file://./models/"
           echo "✅ Model downloaded into ./models"
-
 
       # 9️⃣ Verify downloaded model
       - name: Verify ONNX download
