@@ -1,4 +1,4 @@
-name: Snowflake End-to-End Model Pipeline (Linter Safe)
+name: Snowflake End-to-End Model Pipeline (Query ID Fix)
 
 on:
   push:
@@ -65,7 +65,7 @@ jobs:
           "
           echo "✅ Root task executed."
 
-      # 6️⃣ Wait for TASK_3_MODEL_TRAINING to succeed (linter-safe version)
+      # 6️⃣ Wait for TASK_3_MODEL_TRAINING to succeed (linter-safe)
       - name: Wait for TASK_3_MODEL_TRAINING success
         shell: bash
         run: |
@@ -102,19 +102,30 @@ jobs:
             LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
           " --format table
 
-      # 8️⃣ Fetch newest ONNX model (same-session fix)
+      # 8️⃣ Fetch newest ONNX model (query_id fix)
       - name: Download newest ONNX model
         run: |
-          echo "📥 Fetching latest ONNX model (same session)..."
+          echo "📥 Fetching latest ONNX model (query_id approach)..."
           mkdir -p models
 
-          latest_file=$(snow sql -q "
+          # Step 1: Run LIST and capture query ID
+          query_id=$(snow sql -q "
             USE DATABASE POWERCONSUMPTION;
             USE SCHEMA PUBLIC;
             LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
-            SELECT \"name\" 
-            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)))
-            ORDER BY \"last_modified\" DESC
+          " --format json | jq -r '.[0].query_id')
+
+          if [ -z "$query_id" ] || [ "$query_id" == "null" ]; then
+            echo "❌ Failed to fetch query ID from LIST command!"
+            exit 1
+          fi
+          echo "✅ Captured query ID: $query_id"
+
+          # Step 2: Run RESULT_SCAN using captured query ID
+          latest_file=$(snow sql -q "
+            SELECT name 
+            FROM TABLE(RESULT_SCAN('$query_id'))
+            ORDER BY last_modified DESC
             LIMIT 1;
           " --format csv | tail -n +2 | head -n1 | cut -d',' -f1)
 
