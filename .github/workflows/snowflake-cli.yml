@@ -8,7 +8,7 @@ on:
 jobs:
   run-snowflake-cli:
     runs-on: ubuntu-latest
-    name: Trigger Tasks → Verify → Fetch Latest Model → Upload Artifact
+    name: Trigger → Wait → Fetch Model → Upload Artifact
 
     steps:
       # 1️⃣ Checkout repository
@@ -48,29 +48,91 @@ jobs:
           echo "✅ Snowflake credentials configured."
 
       # 4️⃣ Verify connection context
-      - name: Debug active Snowflake context
+      - name: Verify active Snowflake context
         run: |
-          echo "🔍 Verifying Snowflake session context..."
+          echo "🔍 Checking Snowflake session context..."
           snow sql -q "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_ROLE();" --format table
 
-      # 5️⃣ Trigger the Snowflake ML pipeline
-      - name: Trigger ML pipeline (root task)
+      # 5️⃣ Trigger ML pipeline
+      - name: Trigger Snowflake ML pipeline
         run: |
-          echo "🚀 Executing ML pipeline..."
+          echo "🚀 Executing ML pipeline (root task)..."
           snow sql -q "
             USE WAREHOUSE MLOPS_WH;
             USE DATABASE POWERCONSUMPTION;
             USE SCHEMA PUBLIC;
             EXECUTE TASK TASK_1_DATA_INGESTION;
           "
-          echo "✅ Pipeline triggered successfully."
+          echo "✅ Root task executed."
 
-      # 6️⃣ Wait for TASK_3_MODEL_TRAINING success
-      - name: Wait for TASK_3_MODEL_TRAINING to succeed
+      # 6️⃣ Wait for TASK_3_MODEL_TRAINING to succeed
+      - name: Wait for TASK_3_MODEL_TRAINING success
         run: |
           echo "⏳ Waiting for TASK_3_MODEL_TRAINING success..."
           ATTEMPTS=20
           SLEEP_SEC=30
           i=1
           while [ $i -le $ATTEMPTS ]; do
-            count=$(snow s
+            count=$(snow sql --format csv -q "$(cat <<'SQL'
+              SELECT COUNT(*) 
+              FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(
+                SCHEDULED_TIME_RANGE_START => DATEADD('minute', -60, CURRENT_TIMESTAMP())
+              ))
+              WHERE NAME = 'TASK_3_MODEL_TRAINING'
+              AND STATE = 'SUCCEEDED';
+SQL
+)" | tail -n +2 | cut -d',' -f1)
+
+            echo "🔎 success_count(last 60m) = ${count}"
+            if [ "${count}" != "0" ]; then
+              echo "✅ Training task succeeded recently."
+              break
+            fi
+            i=$((i+1))
+            echo "…not done yet, sleeping ${SLEEP_SEC}s"
+            sleep ${SLEEP_SEC}
+          done
+
+          if [ "${count}" = "0" ]; then
+            echo "❌ Training task did not report success in time."
+            exit 1
+          fi
+
+      # 7️⃣ List ONNX models in stage
+      - name: List ONNX files in stage
+        run: |
+          echo "📜 Listing ONNX models in stage..."
+          snow sql -q "
+            USE DATABASE POWERCONSUMPTION;
+            USE SCHEMA PUBLIC;
+            LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
+          " --format table
+
+      # 8️⃣ Fetch newest ONNX model (same-session fix)
+      - name: Download newest ONNX model
+        run: |
+          echo "📥 Fetching latest ONNX model (same session)..."
+          mkdir -p models
+
+          latest_file=$(snow sql -q "
+            USE DATABASE POWERCONSUMPTION;
+            USE SCHEMA PUBLIC;
+            LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
+            SELECT \"name\" 
+            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)))
+            ORDER BY \"last_modified\" DESC
+            LIMIT 1;
+          " --format csv | tail -n +2 | head -n1 | cut -d',' -f1)
+
+          if [ -z "$latest_file" ]; then
+            echo "❌ No ONNX files found in stage!"
+            exit 1
+          fi
+
+          clean_file=${latest_file#ml_models_stage/}
+          echo "✅ Latest ONNX file: $clean_file"
+          snow sql -q "GET @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE/$clean_file file://./models/"
+          echo "✅ Model downloaded into ./models"
+
+      # 9️⃣ Verify downloaded model
+      - name: Verify ONNX download
