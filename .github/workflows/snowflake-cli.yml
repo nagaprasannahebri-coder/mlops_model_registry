@@ -102,21 +102,23 @@ jobs:
             LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
           " --format table
 
-      # 8️⃣ Fetch newest ONNX model (query_id fix)
+           # 8️⃣ Fetch newest ONNX model (query_id fix)
       - name: Download newest ONNX model
         run: |
           echo "📥 Fetching latest ONNX model (query_id approach)..."
           mkdir -p models
 
-          # Step 1: Run LIST and capture query ID
+          # Step 1: Run LIST and capture query ID correctly
           query_id=$(snow sql -q "
             USE DATABASE POWERCONSUMPTION;
             USE SCHEMA PUBLIC;
             LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
-          " --format json | jq -r '.[0].query_id')
+          " --format json | jq -r '.query_id')
 
           if [ -z "$query_id" ] || [ "$query_id" == "null" ]; then
             echo "❌ Failed to fetch query ID from LIST command!"
+            echo "🔍 Debug output below:"
+            snow sql -q "SELECT CURRENT_TIMESTAMP();" --format json
             exit 1
           fi
           echo "✅ Captured query ID: $query_id"
@@ -136,8 +138,10 @@ jobs:
 
           clean_file=${latest_file#ml_models_stage/}
           echo "✅ Latest ONNX file: $clean_file"
+
           snow sql -q "GET @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE/$clean_file file://./models/"
           echo "✅ Model downloaded into ./models"
+
 
       # 9️⃣ Verify downloaded model
       - name: Verify ONNX download
