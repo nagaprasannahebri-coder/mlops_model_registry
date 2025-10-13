@@ -6,7 +6,7 @@ on:
       - main
 
 permissions:
-  contents: write  # allows committing the model back to the repo
+  contents: write  # Required to push model files to repo
 
 jobs:
   sync-snowflake-model:
@@ -14,20 +14,20 @@ jobs:
     name: Fetch and Commit Latest Model from Snowflake
 
     steps:
-      # 1️⃣ Checkout repo
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Install Snowflake CLI and jq
-      - name: Install dependencies
+      # 2️⃣ Install dependencies
+      - name: Install Snowflake CLI and jq
         run: |
           echo "🧰 Installing Snowflake CLI and jq..."
           pip install --upgrade snowflake-cli-labs
           sudo apt-get install -y jq
           snow --version
 
-      # 3️⃣ Configure Snowflake connection
-      - name: Configure Snowflake credentials
+      # 3️⃣ Configure Snowflake credentials
+      - name: Configure Snowflake connection
         env:
           SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
           SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
@@ -51,19 +51,19 @@ jobs:
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Snowflake connection configured successfully."
 
-      # 4️⃣ Trigger training pipeline task
-      - name: Trigger Snowflake training pipeline
+      # 4️⃣ Trigger ML pipeline
+      - name: Trigger Snowflake ML pipeline
         run: |
-          echo "🚀 Executing root Snowflake ML pipeline..."
+          echo "🚀 Executing Snowflake ML pipeline..."
           snow sql -q "
             USE WAREHOUSE MLOPS_WH;
             USE DATABASE POWERCONSUMPTION;
             USE SCHEMA PUBLIC;
             EXECUTE TASK TASK_1_DATA_INGESTION;
           "
-          echo "✅ Training pipeline triggered."
+          echo "✅ Pipeline triggered successfully."
 
-      # 5️⃣ Wait for training task success
+      # 5️⃣ Wait for training success
       - name: Wait for TASK_3_MODEL_TRAINING success
         shell: bash
         run: |
@@ -90,60 +90,66 @@ jobs:
       # 6️⃣ List ONNX models in stage
       - name: List ONNX models in Snowflake stage
         run: |
-          echo "📜 Listing ONNX models from stage..."
+          echo "📜 Listing ONNX models..."
           snow sql -q "
             USE DATABASE POWERCONSUMPTION;
             USE SCHEMA PUBLIC;
             LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
           " --format table
 
-      # 7️⃣ Download latest ONNX model and push to GitHub
+      # 7️⃣ Download newest ONNX model and push to GitHub
       - name: Download latest ONNX file and push to repo
         run: |
-          echo "📥 Fetching latest ONNX file from Snowflake stage..."
+          echo "📥 Fetching latest ONNX file (time-aware sort)..."
           mkdir -p staged_models
 
-          # 1️⃣ Fetch and parse JSON output
+          # 1️⃣ Get JSON of all models in stage
           json_out=$(snow sql -q "
             USE DATABASE POWERCONSUMPTION;
             USE SCHEMA PUBLIC;
             LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
           " --format json)
 
+          # 2️⃣ Sort by real timestamps (not strings)
           latest_file=$(echo "$json_out" | jq -r '
             flatten
             | map(select(.name? != null))
-            | sort_by(.last_modified)
+            | sort_by(
+                ( .last_modified
+                  | sub(", "; " ")
+                  | strptime("%a %d %b %Y %H:%M:%S GMT")
+                  | mktime )
+              )
             | reverse
             | .[0].name
           ')
 
           if [ -z "$latest_file" ] || [ "$latest_file" == "null" ]; then
-            echo "❌ No ONNX files found in stage!"
+            echo "❌ No ONNX files found!"
             echo "$json_out" | head -n 40
             exit 1
           fi
 
           echo "✅ Latest file: $latest_file"
 
-          # 2️⃣ Clean duplicate prefix (important!)
+          # 3️⃣ Clean redundant prefix (ml_models_stage/)
           clean_file=${latest_file#ml_models_stage/}
           echo "🧩 Clean file path: $clean_file"
 
-          # 3️⃣ Download the cleaned file
+          # 4️⃣ Download the model
           snow sql -q "GET @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE/$clean_file file://staged_models/"
           echo "✅ Model downloaded to staged_models/"
 
-          # 4️⃣ Commit and push model to GitHub
+          # 5️⃣ Commit & push to GitHub
           git config user.name "github-actions"
           git config user.email "actions@github.com"
 
           git add staged_models/
           git commit -m "Auto-sync ONNX model from Snowflake stage ($clean_file)" || echo "No new model changes"
           git push
-          echo "✅ Model file pushed successfully!"
+          echo "✅ Model pushed successfully!"
 
-      # 8️⃣ Final summary
+      # 8️⃣ Summary
       - name: Summary
         run: |
           echo "✅ End-to-end Snowflake pipeline completed successfully!"
