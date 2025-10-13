@@ -1,9 +1,9 @@
-name: Snowflake End-to-End Model Pipeline (SQL Sort Version)
+name: Snowflake End-to-End Model Pipeline (SQL Sort Version - Fixed)
 
 on:
   push:
     branches:
-      - main   # ✅ Auto-trigger when code is pushed to main
+      - main   # ✅ Auto-trigger on pushes to main (change branch if needed)
 
 jobs:
   run-snowflake-cli:
@@ -47,7 +47,7 @@ jobs:
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Snowflake credentials configured."
 
-      # 4️⃣ Trigger the root task (chain 1→2→3→4)
+      # 4️⃣ Trigger the root task (executes chain 1→2→3→4)
       - name: Trigger Snowflake ML pipeline (root task)
         run: |
           echo "🚀 Executing pipeline (root task)..."
@@ -89,35 +89,36 @@ jobs:
             exit 1
           fi
 
-      # 6️⃣ List stage files
+      # 6️⃣ List stage files for debug
       - name: List ONNX files in @ML_MODELS_STAGE (debug)
         run: |
           echo "📜 Stage listing:"
           snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format table
 
-      # 7️⃣ Fetch newest ONNX (Snowflake SQL sorts it)
+      # 7️⃣ Fetch newest ONNX model (Snowflake does sorting)
       - name: Download newest ONNX model (SQL-based sort)
         run: |
           echo "📥 Fetching latest ONNX model using Snowflake sort..."
           mkdir -p models
-          # 1. List files
-          snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format csv > stage_list.csv
-          # 2. Get latest file name (Snowflake sorts via RESULT_SCAN)
+
           latest_file=$(snow sql -q "
-            SELECT name FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)))
+            LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx';
+            SELECT name
+            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)))
             ORDER BY last_modified DESC
             LIMIT 1;
-          " --format csv | tail -n +2 | cut -d',' -f1)
+          " --format csv | tail -n +2 | head -n1 | cut -d',' -f1)
+
           if [ -z "$latest_file" ]; then
             echo "❌ No ONNX files found in @ML_MODELS_STAGE!"
             exit 1
           fi
+
           echo "✅ Latest ONNX file: $latest_file"
-          # 3. Download the latest model
           snow sql -q "GET @ML_MODELS_STAGE/$latest_file file://./models/"
           echo "✅ Model downloaded into ./models"
 
-      # 8️⃣ Verify model
+      # 8️⃣ Verify the downloaded model
       - name: Verify downloaded model
         run: |
           echo "🔎 Verifying downloaded ONNX..."
@@ -128,7 +129,7 @@ jobs:
           fi
           echo "✅ ONNX model present."
 
-      # 9️⃣ Upload artifact
+      # 9️⃣ Upload artifact to GitHub
       - name: Upload exported ONNX model
         uses: actions/upload-artifact@v4
         with:
@@ -140,4 +141,4 @@ jobs:
       - name: Summary
         run: |
           echo "✅ End-to-end pipeline completed."
-          echo "✅ Latest model trained by TASK_3 and fetched (SQL-based sort) from @ML_MODELS_STAGE."
+          echo "✅ Latest model trained by TASK_3 and fetched from @ML_MODELS_STAGE (SQL-based sort)."
