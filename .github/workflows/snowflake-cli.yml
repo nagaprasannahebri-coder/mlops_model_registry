@@ -1,9 +1,9 @@
-name: Snowflake End-to-End Model Pipeline (SQL Sort Version - Fixed)
+name: Snowflake End-to-End Model Pipeline (SQL Sort – Final Fix)
 
 on:
   push:
     branches:
-      - main   # ✅ Auto-trigger on pushes to main (change branch if needed)
+      - main   # 🔁 Auto-trigger when code is pushed to main
 
 jobs:
   run-snowflake-cli:
@@ -89,23 +89,24 @@ jobs:
             exit 1
           fi
 
-      # 6️⃣ List stage files for debug
+      # 6️⃣ List stage files (debug)
       - name: List ONNX files in @ML_MODELS_STAGE (debug)
         run: |
           echo "📜 Stage listing:"
           snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format table
 
-      # 7️⃣ Fetch newest ONNX model (Snowflake does sorting)
+      # 7️⃣ Fetch newest ONNX model (quoted identifiers + clean path)
       - name: Download newest ONNX model (SQL-based sort)
         run: |
           echo "📥 Fetching latest ONNX model using Snowflake sort..."
           mkdir -p models
 
+          # Run LIST + ORDER BY in one Snowflake session
           latest_file=$(snow sql -q "
             LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx';
-            SELECT name
+            SELECT \"name\"
             FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)))
-            ORDER BY last_modified DESC
+            ORDER BY \"last_modified\" DESC
             LIMIT 1;
           " --format csv | tail -n +2 | head -n1 | cut -d',' -f1)
 
@@ -114,11 +115,14 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Latest ONNX file: $latest_file"
-          snow sql -q "GET @ML_MODELS_STAGE/$latest_file file://./models/"
+          # Strip duplicate stage prefix
+          clean_file=${latest_file#ml_models_stage/}
+
+          echo "✅ Latest ONNX file: $clean_file"
+          snow sql -q "GET @ML_MODELS_STAGE/$clean_file file://./models/"
           echo "✅ Model downloaded into ./models"
 
-      # 8️⃣ Verify the downloaded model
+      # 8️⃣ Verify downloaded model
       - name: Verify downloaded model
         run: |
           echo "🔎 Verifying downloaded ONNX..."
@@ -129,7 +133,7 @@ jobs:
           fi
           echo "✅ ONNX model present."
 
-      # 9️⃣ Upload artifact to GitHub
+      # 9️⃣ Upload artifact
       - name: Upload exported ONNX model
         uses: actions/upload-artifact@v4
         with:
