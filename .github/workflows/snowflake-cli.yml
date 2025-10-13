@@ -1,4 +1,4 @@
-name: Snowflake End-to-End Model Pipeline (Fully Qualified Stage)
+name: Snowflake End-to-End Model Pipeline (Latest Model Fix)
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 jobs:
   run-snowflake-cli:
     runs-on: ubuntu-latest
-    name: Trigger Tasks → Wait for Training → Fetch Latest ONNX → Upload
+    name: Trigger Tasks → Verify → Fetch Latest Model → Upload Artifact
 
     steps:
       # 1️⃣ Checkout repository
@@ -47,23 +47,23 @@ jobs:
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Snowflake credentials configured."
 
-      # 4️⃣ Debug current Snowflake context
+      # 4️⃣ Verify connection context
       - name: Debug active Snowflake context
         run: |
           echo "🔍 Verifying Snowflake session context..."
           snow sql -q "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_ROLE();" --format table
 
-      # 5️⃣ Trigger the root task (executes 1→2→3→4)
-      - name: Trigger Snowflake ML pipeline (root task)
+      # 5️⃣ Trigger the Snowflake ML pipeline
+      - name: Trigger ML pipeline (root task)
         run: |
-          echo "🚀 Executing pipeline (root task)..."
+          echo "🚀 Executing ML pipeline..."
           snow sql -q "
             USE WAREHOUSE MLOPS_WH;
             USE DATABASE POWERCONSUMPTION;
             USE SCHEMA PUBLIC;
             EXECUTE TASK TASK_1_DATA_INGESTION;
           "
-          echo "✅ Root task executed."
+          echo "✅ Pipeline triggered successfully."
 
       # 6️⃣ Wait for TASK_3_MODEL_TRAINING success
       - name: Wait for TASK_3_MODEL_TRAINING to succeed
@@ -73,79 +73,4 @@ jobs:
           SLEEP_SEC=30
           i=1
           while [ $i -le $ATTEMPTS ]; do
-            count=$(snow sql -q "
-              SELECT COUNT(*) AS C
-              FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(
-                SCHEDULED_TIME_RANGE_START => DATEADD('minute', -45, CURRENT_TIMESTAMP())
-              ))
-              WHERE name = 'TASK_3_MODEL_TRAINING'
-                AND state = 'SUCCEEDED';
-            " --format csv | tail -n +2 | cut -d',' -f1)
-            echo "🔎 success_count(last 45m) = ${count}"
-            if [ "${count}" != "0" ]; then
-              echo "✅ Training task succeeded recently."
-              break
-            fi
-            i=$((i+1))
-            echo "…not done yet, sleeping ${SLEEP_SEC}s"
-            sleep ${SLEEP_SEC}
-          done
-          if [ "${count}" = "0" ]; then
-            echo "❌ Training task did not report success in time."
-            exit 1
-          fi
-
-      # 7️⃣ List files in stage for debug
-      - name: List ONNX files in stage
-        run: |
-          echo "📜 Listing ONNX files in stage..."
-          snow sql -q "LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format table
-
-      # 8️⃣ Fetch newest ONNX model (quoted identifiers + fully qualified stage)
-      - name: Download newest ONNX model (SQL-based sort)
-        run: |
-          echo "📥 Fetching latest ONNX model using Snowflake sort..."
-          mkdir -p models
-
-          latest_file=$(snow sql -q "
-            LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
-            SELECT \"name\"
-            FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)))
-            ORDER BY \"last_modified\" DESC
-            LIMIT 1;
-          " --format csv | tail -n +2 | head -n1 | cut -d',' -f1)
-
-          if [ -z "$latest_file" ]; then
-            echo "❌ No ONNX files found in @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE!"
-            exit 1
-          fi
-
-          clean_file=${latest_file#ml_models_stage/}
-          echo "✅ Latest ONNX file: $clean_file"
-          snow sql -q "GET @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE/$clean_file file://./models/"
-          echo "✅ Model downloaded into ./models"
-
-      # 9️⃣ Verify downloaded model
-      - name: Verify downloaded model
-        run: |
-          echo "🔎 Verifying downloaded ONNX..."
-          ls -lh models || true
-          if ! ls models/*.onnx 1>/dev/null 2>&1; then
-            echo "❌ No .onnx files were downloaded."
-            exit 1
-          fi
-          echo "✅ ONNX model present."
-
-      # 🔟 Upload artifact to GitHub
-      - name: Upload exported ONNX model
-        uses: actions/upload-artifact@v4
-        with:
-          name: exported-onnx-model
-          path: models/
-          retention-days: 7
-
-      # 11️⃣ Summary
-      - name: Summary
-        run: |
-          echo "✅ End-to-end pipeline completed."
-          echo "✅ Latest model trained by TASK_3 and fetched from @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE."
+            count=$(snow s
