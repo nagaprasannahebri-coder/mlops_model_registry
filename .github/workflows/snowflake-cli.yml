@@ -1,9 +1,9 @@
-name: Snowflake End-to-End Model Pipeline (SQL Sort – Final Fix)
+name: Snowflake End-to-End Model Pipeline (Fully Qualified Stage)
 
 on:
   push:
     branches:
-      - main   # 🔁 Auto-trigger when code is pushed to main
+      - main
 
 jobs:
   run-snowflake-cli:
@@ -47,7 +47,13 @@ jobs:
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Snowflake credentials configured."
 
-      # 4️⃣ Trigger the root task (executes chain 1→2→3→4)
+      # 4️⃣ Debug current Snowflake context
+      - name: Debug active Snowflake context
+        run: |
+          echo "🔍 Verifying Snowflake session context..."
+          snow sql -q "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA(), CURRENT_ROLE();" --format table
+
+      # 5️⃣ Trigger the root task (executes 1→2→3→4)
       - name: Trigger Snowflake ML pipeline (root task)
         run: |
           echo "🚀 Executing pipeline (root task)..."
@@ -59,7 +65,7 @@ jobs:
           "
           echo "✅ Root task executed."
 
-      # 5️⃣ Poll until TASK_3_MODEL_TRAINING succeeded recently
+      # 6️⃣ Wait for TASK_3_MODEL_TRAINING success
       - name: Wait for TASK_3_MODEL_TRAINING to succeed
         run: |
           echo "⏳ Waiting for TASK_3_MODEL_TRAINING success..."
@@ -89,21 +95,20 @@ jobs:
             exit 1
           fi
 
-      # 6️⃣ List stage files (debug)
-      - name: List ONNX files in @ML_MODELS_STAGE (debug)
+      # 7️⃣ List files in stage for debug
+      - name: List ONNX files in stage
         run: |
-          echo "📜 Stage listing:"
-          snow sql -q "LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format table
+          echo "📜 Listing ONNX files in stage..."
+          snow sql -q "LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx'" --format table
 
-      # 7️⃣ Fetch newest ONNX model (quoted identifiers + clean path)
+      # 8️⃣ Fetch newest ONNX model (quoted identifiers + fully qualified stage)
       - name: Download newest ONNX model (SQL-based sort)
         run: |
           echo "📥 Fetching latest ONNX model using Snowflake sort..."
           mkdir -p models
 
-          # Run LIST + ORDER BY in one Snowflake session
           latest_file=$(snow sql -q "
-            LIST @ML_MODELS_STAGE PATTERN='.*\\.onnx';
+            LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
             SELECT \"name\"
             FROM TABLE(RESULT_SCAN(LAST_QUERY_ID(-1)))
             ORDER BY \"last_modified\" DESC
@@ -111,18 +116,16 @@ jobs:
           " --format csv | tail -n +2 | head -n1 | cut -d',' -f1)
 
           if [ -z "$latest_file" ]; then
-            echo "❌ No ONNX files found in @ML_MODELS_STAGE!"
+            echo "❌ No ONNX files found in @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE!"
             exit 1
           fi
 
-          # Strip duplicate stage prefix
           clean_file=${latest_file#ml_models_stage/}
-
           echo "✅ Latest ONNX file: $clean_file"
-          snow sql -q "GET @ML_MODELS_STAGE/$clean_file file://./models/"
+          snow sql -q "GET @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE/$clean_file file://./models/"
           echo "✅ Model downloaded into ./models"
 
-      # 8️⃣ Verify downloaded model
+      # 9️⃣ Verify downloaded model
       - name: Verify downloaded model
         run: |
           echo "🔎 Verifying downloaded ONNX..."
@@ -133,7 +136,7 @@ jobs:
           fi
           echo "✅ ONNX model present."
 
-      # 9️⃣ Upload artifact
+      # 🔟 Upload artifact to GitHub
       - name: Upload exported ONNX model
         uses: actions/upload-artifact@v4
         with:
@@ -141,8 +144,8 @@ jobs:
           path: models/
           retention-days: 7
 
-      # 🔟 Summary
+      # 11️⃣ Summary
       - name: Summary
         run: |
           echo "✅ End-to-end pipeline completed."
-          echo "✅ Latest model trained by TASK_3 and fetched from @ML_MODELS_STAGE (SQL-based sort)."
+          echo "✅ Latest model trained by TASK_3 and fetched from @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE."
