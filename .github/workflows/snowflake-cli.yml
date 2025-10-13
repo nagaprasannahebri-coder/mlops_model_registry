@@ -1,4 +1,4 @@
-name: Snowflake End-to-End Model Pipeline (Auto JSON Fix)
+name: Snowflake End-to-End Model Pipeline (Final Stable Build)
 
 on:
   push:
@@ -65,7 +65,7 @@ jobs:
           "
           echo "✅ Root task executed."
 
-      # 6️⃣ Wait for TASK_3_MODEL_TRAINING to succeed (linter-safe)
+      # 6️⃣ Wait for TASK_3_MODEL_TRAINING success
       - name: Wait for TASK_3_MODEL_TRAINING success
         shell: bash
         run: |
@@ -75,18 +75,15 @@ jobs:
           i=1
           while [ $i -le $ATTEMPTS ]; do
             count=$(snow sql --format csv -q "SELECT COUNT(*) FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(SCHEDULED_TIME_RANGE_START => DATEADD('minute', -60, CURRENT_TIMESTAMP()))) WHERE NAME = 'TASK_3_MODEL_TRAINING' AND STATE = 'SUCCEEDED';" | tail -n +2 | cut -d',' -f1)
-
             echo "🔎 success_count(last 60m) = ${count}"
             if [ "${count}" != "0" ]; then
               echo "✅ Training task succeeded recently."
               break
             fi
-
             i=$((i+1))
             echo "…not done yet, sleeping ${SLEEP_SEC}s"
             sleep ${SLEEP_SEC}
           done
-
           if [ "${count}" = "0" ]; then
             echo "❌ Training task did not report success in time."
             exit 1
@@ -102,33 +99,32 @@ jobs:
             LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
           " --format table
 
-      # 8️⃣ Fetch newest ONNX model (query_id auto-detect fix)
+      # 8️⃣ Fetch newest ONNX model (defensive JSON parser)
       - name: Download newest ONNX model
         run: |
-          echo "📥 Fetching latest ONNX model (auto-detect JSON)..."
+          echo "📥 Fetching latest ONNX model (defensive JSON parser)..."
           mkdir -p models
 
-          # Step 1: Run LIST and capture query ID safely
-          query_id=$(snow sql -q "
+          # Step 1 – LIST and capture query ID robustly
+          json_out=$(snow sql -q "
             USE DATABASE POWERCONSUMPTION;
             USE SCHEMA PUBLIC;
             LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
-          " --format json | jq -r 'if type=="array" then .[0].query_id else .query_id end')
+          " --format json)
 
-          if [ -z "$query_id" ] || [ "$query_id" == "null" ]; then
-            echo "❌ Failed to fetch query ID from LIST command!"
-            echo "🔍 Debugging Snowflake JSON output for inspection:"
-            snow sql -q "
-              USE DATABASE POWERCONSUMPTION;
-              USE SCHEMA PUBLIC;
-              LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
-            " --format json | head -n 50
-            exit 1
+          query_id=$(echo "$json_out" | jq -r 'try .query_id catch ""')
+          if [ -z "$query_id" ] || [ "$query_id" == "null" ] || [ "$query_id" == "" ]; then
+            query_id=$(echo "$json_out" | jq -r 'try .[0].query_id catch ""')
           fi
 
+          if [ -z "$query_id" ] || [ "$query_id" == "null" ] || [ "$query_id" == "" ]; then
+            echo "❌ Could not extract query ID; printing first lines of JSON:"
+            echo "$json_out" | head -n 40
+            exit 1
+          fi
           echo "✅ Captured query ID: $query_id"
 
-          # Step 2: Run RESULT_SCAN using captured query ID
+          # Step 2 – Scan results for latest file
           latest_file=$(snow sql -q "
             SELECT name 
             FROM TABLE(RESULT_SCAN('$query_id'))
@@ -143,6 +139,7 @@ jobs:
 
           clean_file=${latest_file#ml_models_stage/}
           echo "✅ Latest ONNX file: $clean_file"
+
           snow sql -q "GET @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE/$clean_file file://./models/"
           echo "✅ Model downloaded into ./models"
 
