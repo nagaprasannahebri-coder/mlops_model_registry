@@ -1,12 +1,17 @@
 name: Snowflake Model Auto-Sync to GitHub
 
 on:
+  # 🟢 Triggered remotely via REST API (e.g., Willow Activate, Snowflake, Jenkins)
+  repository_dispatch:
+    types: [model_sync]
+
+  # 🔵 Triggered automatically on any code push or merge to main
   push:
     branches:
       - main
 
 permissions:
-  contents: write  # Required to push model files to repo
+  contents: write
 
 jobs:
   sync-snowflake-model:
@@ -18,7 +23,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # required for rebase to work
+          fetch-depth: 0  # required for rebase
 
       # 2️⃣ Install dependencies
       - name: Install Snowflake CLI and jq
@@ -36,8 +41,8 @@ jobs:
           SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
           SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-          SNOWFLAKE_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
-          SNOWFLAKE_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
+          SNOWFLAKE_DATABASE: ${{ github.event.client_payload.database || secrets.SNOWFLAKE_DATABASE }}
+          SNOWFLAKE_SCHEMA: ${{ github.event.client_payload.schema || secrets.SNOWFLAKE_SCHEMA }}
         run: |
           mkdir -p ~/.snowflake
           cat <<EOF > ~/.snowflake/config.toml
@@ -53,14 +58,14 @@ jobs:
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Snowflake connection configured successfully."
 
-      # 4️⃣ Trigger ML pipeline
+      # 4️⃣ Trigger Snowflake ML pipeline
       - name: Trigger Snowflake ML pipeline
         run: |
           echo "🚀 Executing Snowflake ML pipeline..."
           snow sql -q "
             USE WAREHOUSE MLOPS_WH;
-            USE DATABASE POWERCONSUMPTION;
-            USE SCHEMA PUBLIC;
+            USE DATABASE ${{ github.event.client_payload.database || 'POWERCONSUMPTION' }};
+            USE SCHEMA ${{ github.event.client_payload.schema || 'PUBLIC' }};
             EXECUTE TASK TASK_1_DATA_INGESTION;
           "
           echo "✅ Pipeline triggered successfully."
@@ -89,29 +94,17 @@ jobs:
             exit 1
           fi
 
-      # 6️⃣ List ONNX models in stage
-      - name: List ONNX models in Snowflake stage
+      # 6️⃣ List and fetch ONNX model
+      - name: Download latest ONNX model and push to repo
         run: |
-          echo "📜 Listing ONNX models..."
-          snow sql -q "
-            USE DATABASE POWERCONSUMPTION;
-            USE SCHEMA PUBLIC;
-            LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
-          " --format table
-
-      # 7️⃣ Download newest ONNX model and push to GitHub (REBASE-SAFE FIX)
-      - name: Download latest ONNX file and push to repo
-        run: |
-          echo "📥 Fetching latest ONNX file (time-aware sort)..."
+          echo "📥 Fetching latest ONNX file..."
           mkdir -p staged_models
-          # 1️⃣ Get JSON of all models in stage
           json_out=$(snow sql -q "
-            USE DATABASE POWERCONSUMPTION;
-            USE SCHEMA PUBLIC;
-            LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
+            USE DATABASE ${{ github.event.client_payload.database || 'POWERCONSUMPTION' }};
+            USE SCHEMA ${{ github.event.client_payload.schema || 'PUBLIC' }};
+            LIST @${{ github.event.client_payload.stage || 'ML_MODELS_STAGE' }} PATTERN='${{ github.event.client_payload.model_pattern || ".*\\.onnx" }}';
           " --format json)
 
-          # 2️⃣ Sort by real timestamps (not strings)
           latest_file=$(echo "$json_out" | jq -r '
             flatten
             | map(select(.name? != null))
@@ -126,34 +119,23 @@ jobs:
           ')
           if [ -z "$latest_file" ] || [ "$latest_file" == "null" ]; then
             echo "❌ No ONNX files found!"
-            echo "$json_out" | head -n 40
             exit 1
           fi
-          echo "✅ Latest file: $latest_file"
-
-          # 3️⃣ Clean redundant prefix (ml_models_stage/)
           clean_file=${latest_file#ml_models_stage/}
-          echo "🧩 Clean file path: $clean_file"
+          echo "✅ Latest model file: $clean_file"
+          snow sql -q "GET @${{ github.event.client_payload.stage || 'ML_MODELS_STAGE' }}/$clean_file file://staged_models/"
+          echo "✅ Model downloaded successfully!"
 
-          # 4️⃣ Download the model
-          snow sql -q "GET @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE/$clean_file file://staged_models/"
-          echo "✅ Model downloaded to staged_models/"
-
-          # 5️⃣ Commit & push to GitHub (rebase-safe)
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add staged_models/
           git commit -m "Auto-sync ONNX model from Snowflake stage ($clean_file)" || echo "No new model changes"
-
-          echo "🔄 Rebasing with remote main..."
           git pull --rebase origin main || true
-
-          echo "🚀 Pushing changes to main..."
           git push origin main
           echo "✅ Model pushed successfully!"
 
-      # 8️⃣ Summary
+      # 7️⃣ Summary
       - name: Summary
         run: |
-          echo "✅ End-to-end Snowflake pipeline completed successfully!"
+          echo "✅ Workflow executed successfully!"
           echo "✅ Latest ONNX model synced to GitHub under staged_models/ directory."
