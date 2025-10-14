@@ -17,6 +17,8 @@ jobs:
       # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # required for rebase to work
 
       # 2️⃣ Install dependencies
       - name: Install Snowflake CLI and jq
@@ -97,12 +99,11 @@ jobs:
             LIST @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE PATTERN='.*\\.onnx';
           " --format table
 
-      # 7️⃣ Download newest ONNX model and push to GitHub
+      # 7️⃣ Download newest ONNX model and push to GitHub (REBASE-SAFE FIX)
       - name: Download latest ONNX file and push to repo
         run: |
           echo "📥 Fetching latest ONNX file (time-aware sort)..."
           mkdir -p staged_models
-
           # 1️⃣ Get JSON of all models in stage
           json_out=$(snow sql -q "
             USE DATABASE POWERCONSUMPTION;
@@ -123,13 +124,11 @@ jobs:
             | reverse
             | .[0].name
           ')
-
           if [ -z "$latest_file" ] || [ "$latest_file" == "null" ]; then
             echo "❌ No ONNX files found!"
             echo "$json_out" | head -n 40
             exit 1
           fi
-
           echo "✅ Latest file: $latest_file"
 
           # 3️⃣ Clean redundant prefix (ml_models_stage/)
@@ -140,13 +139,17 @@ jobs:
           snow sql -q "GET @POWERCONSUMPTION.PUBLIC.ML_MODELS_STAGE/$clean_file file://staged_models/"
           echo "✅ Model downloaded to staged_models/"
 
-          # 5️⃣ Commit & push to GitHub
+          # 5️⃣ Commit & push to GitHub (rebase-safe)
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-
           git add staged_models/
           git commit -m "Auto-sync ONNX model from Snowflake stage ($clean_file)" || echo "No new model changes"
-          git push
+
+          echo "🔄 Rebasing with remote main..."
+          git pull --rebase origin main || true
+
+          echo "🚀 Pushing changes to main..."
+          git push origin main
           echo "✅ Model pushed successfully!"
 
       # 8️⃣ Summary
