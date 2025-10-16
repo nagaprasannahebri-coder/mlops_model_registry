@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:    
 
 permissions:
   contents: write  # Required to push files and create releases
