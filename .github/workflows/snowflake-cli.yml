@@ -1,4 +1,4 @@
-name: Snowflake Model Auto-Sync to GitHub
+name: Snowflake Model Auto-Sync + Release
 
 on:
   repository_dispatch:
@@ -6,14 +6,15 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:    
 
 permissions:
-  contents: write  # Required to push model files to repo
+  contents: write  # Required to push files and create releases
 
 jobs:
   sync-snowflake-model:
     runs-on: ubuntu-latest
-    name: Fetch and Commit Latest Model from Snowflake
+    name: Fetch, Commit & Release Model from Snowflake
 
     env:
       SNOWFLAKE_CONNECTIONS_DEFAULT_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -29,7 +30,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # required for rebase to work
+          fetch-depth: 0
 
       # 2️⃣ Install Snowflake CLI (modern v3) and jq
       - name: Install Snowflake CLI (v3) and jq
@@ -43,7 +44,7 @@ jobs:
           source $GITHUB_ENV
           snow --version
 
-      # 3️⃣ Configure Snowflake connection (secure config.toml)
+      # 3️⃣ Configure Snowflake connection
       - name: Configure Snowflake connection
         shell: bash
         run: |
@@ -62,7 +63,6 @@ jobs:
 
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Config file created and secured."
-          grep -v "password" ~/.snowflake/config.toml
 
       # 4️⃣ Verify Snowflake connection
       - name: Verify Snowflake connection
@@ -127,8 +127,10 @@ jobs:
             LIST @${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE}.${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA}.ML_MODELS_STAGE PATTERN='.*.onnx';
           " --format table
 
-      # 8️⃣ Download newest ONNX model and push (rebase-safe)
-      - name: Download latest ONNX file and push to repo
+      # 8️⃣ Download newest ONNX model and push to repo + release
+      - name: Download latest ONNX file, commit, and release
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           echo "📥 Fetching latest ONNX file..."
@@ -164,22 +166,32 @@ jobs:
 
           echo "🧩 Downloading model..."
           snow sql -q "GET @${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE}.${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA}.ML_MODELS_STAGE/$clean_file file://staged_models/"
-          echo "✅ Model downloaded."
+          echo "✅ Model downloaded to staged_models/$clean_file"
 
+          # Commit model to repo
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add staged_models/
           git commit -m "Auto-sync ONNX model from Snowflake stage ($clean_file)" || echo "No new model changes"
-          echo "🔄 Rebasing with remote main..."
-          git pull --rebase origin main || true
-          echo "🚀 Pushing changes..."
-          git push origin main
-          echo "✅ Model pushed successfully!"
+
+          CURRENT_BRANCH="${GITHUB_REF_NAME}"
+          echo "🔀 Current branch is ${CURRENT_BRANCH}"
+          git pull --rebase origin "${CURRENT_BRANCH}" || true
+          git push origin "${CURRENT_BRANCH}"
+
+          # Prepare release tag
+          RELEASE_TAG="model-$(date +'%Y%m%d-%H%M%S')"
+          RELEASE_NAME="Snowflake Model Sync $(date +'%Y-%m-%d %H:%M:%S')"
+          echo "📦 Creating release ${RELEASE_TAG}"
+
+          # Create release with model asset
+          gh release create "$RELEASE_TAG" staged_models/*.onnx \
+            --title "$RELEASE_NAME" \
+            --notes "Automated release of ONNX model synced from Snowflake."
 
       # 9️⃣ Summary
       - name: Summary
         run: |
-          echo "✅ End-to-end Snowflake model sync completed successfully!"
-          echo "✅ Latest ONNX model available under staged_models/ directory."
+          echo "✅ Model committed to repo and released successfully!"
 
 
