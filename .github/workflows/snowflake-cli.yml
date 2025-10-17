@@ -171,8 +171,11 @@ jobs:
           git config user.email "actions@github.com"
           git add staged_models/
           git commit -m "Auto-sync ONNX model from Snowflake stage ($clean_file)" || echo "No new model changes"
-          git pull --rebase origin main || true
-          git push origin main
+
+          CURRENT_BRANCH="${GITHUB_REF_NAME}"
+          echo "🔀 Current branch is ${CURRENT_BRANCH}"
+          git pull --rebase origin "${CURRENT_BRANCH}" || true
+          git push origin "${CURRENT_BRANCH}"
 
           # Prepare release tag
           RELEASE_TAG="model-$(date +'%Y%m%d-%H%M%S')"
