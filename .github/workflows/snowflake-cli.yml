@@ -129,6 +129,8 @@ jobs:
 
       # 8️⃣ Download newest ONNX model and push to repo + release
       - name: Download latest ONNX file, commit, and release
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           echo "📥 Fetching latest ONNX file..."
