@@ -40,9 +40,13 @@ jobs:
 
       # 3️⃣ Configure connection
       - name: Configure Snowflake
+        shell: bash
         run: |
+          echo "🧩 Creating ~/.snowflake/config.toml (secure)..."
           mkdir -p ~/.snowflake
-          cat <<EOF > ~/.snowflake/config.toml
+          # create with safe umask so file is not world-readable
+          umask 077
+          cat > ~/.snowflake/config.toml <<EOF
           [connections.default]
           account = "${SNOWFLAKE_CONNECTIONS_DEFAULT_ACCOUNT}"
           user = "${SNOWFLAKE_CONNECTIONS_DEFAULT_USER}"
@@ -52,6 +56,11 @@ jobs:
           database = "${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE}"
           schema = "${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA}"
           EOF
+          # restore umask
+          umask 022
+          # make sure permissions are strict
+          chmod 600 ~/.snowflake/config.toml
+          echo "✅ Config file created and secured."
 
       # 4️⃣ Verify Snowflake connection
       - name: Verify Snowflake Connection
