@@ -1,19 +1,20 @@
-name: Snowflake Model Auto-Sync + Release (Latest Only)
+name: Snowflake Model Auto-Sync + Release
 
 on:
+  repository_dispatch:
+    types: [model_sync]
   push:
     branches:
       - main
-  repository_dispatch:
-    types: [model_sync]
-  workflow_dispatch: # ✅ Manual trigger
+  workflow_dispatch:    
 
 permissions:
-  contents: write
+  contents: write  # Required to push files and create releases
 
 jobs:
   sync-snowflake-model:
     runs-on: ubuntu-latest
+    name: Fetch, Commit & Release Model from Snowflake
 
     env:
       SNOWFLAKE_CONNECTIONS_DEFAULT_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
@@ -21,58 +22,123 @@ jobs:
       SNOWFLAKE_CONNECTIONS_DEFAULT_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
       SNOWFLAKE_CONNECTIONS_DEFAULT_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
       SNOWFLAKE_CONNECTIONS_DEFAULT_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-      SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE: ${{ secrets.SNOWFLAKE_DATABASE }}
-      SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA: ${{ secrets.SNOWFLAKE_SCHEMA }}
+      SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE: ${{ github.event.client_payload.database || secrets.SNOWFLAKE_DATABASE }}
+      SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA: ${{ github.event.client_payload.schema || secrets.SNOWFLAKE_SCHEMA }}
 
     steps:
-      # 1️⃣ Checkout repo
+      # 1️⃣ Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2️⃣ Install Snowflake CLI (modern version)
-      - name: Install Snowflake CLI
-        run: |
-          python3 -m pip install --upgrade pip
-          pip install --user "snowflake-cli>=3.10.0"
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      # 3️⃣ Configure connection
-      - name: Configure Snowflake
+      # 2️⃣ Install Snowflake CLI (modern v3) and jq
+      - name: Install Snowflake CLI (v3) and jq
         shell: bash
         run: |
-          echo "🧩 Creating ~/.snowflake/config.toml (secure)..."
+          echo "🐍 Installing modern Snowflake CLI..."
+          python3 -m pip install --upgrade pip
+          pip install --user --upgrade "snowflake-cli>=3.10.0"
+          sudo apt-get install -y jq
+          echo 'export PATH=$HOME/.local/bin:$PATH' >> $GITHUB_ENV
+          source $GITHUB_ENV
+          snow --version
+
+      # 3️⃣ Configure Snowflake connection
+      - name: Configure Snowflake connection
+        shell: bash
+        run: |
+          echo "🧩 Creating ~/.snowflake/config.toml..."
           mkdir -p ~/.snowflake
-          # create with safe umask so file is not world-readable
-          umask 077
-          cat > ~/.snowflake/config.toml <<EOF
-          [connections.default]
-          account = "${SNOWFLAKE_CONNECTIONS_DEFAULT_ACCOUNT}"
-          user = "${SNOWFLAKE_CONNECTIONS_DEFAULT_USER}"
-          password = "${SNOWFLAKE_CONNECTIONS_DEFAULT_PASSWORD}"
-          role = "${SNOWFLAKE_CONNECTIONS_DEFAULT_ROLE}"
-          warehouse = "${SNOWFLAKE_CONNECTIONS_DEFAULT_WAREHOUSE}"
-          database = "${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE}"
-          schema = "${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA}"
-          EOF
-          # restore umask
-          umask 022
-          # make sure permissions are strict
+          {
+            echo "[connections.default]"
+            echo "account = \"${SNOWFLAKE_CONNECTIONS_DEFAULT_ACCOUNT}\""
+            echo "user = \"${SNOWFLAKE_CONNECTIONS_DEFAULT_USER}\""
+            echo "password = \"${SNOWFLAKE_CONNECTIONS_DEFAULT_PASSWORD}\""
+            echo "role = \"${SNOWFLAKE_CONNECTIONS_DEFAULT_ROLE}\""
+            echo "warehouse = \"${SNOWFLAKE_CONNECTIONS_DEFAULT_WAREHOUSE}\""
+            echo "database = \"${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE}\""
+            echo "schema = \"${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA}\""
+          } > ~/.snowflake/config.toml
+
           chmod 600 ~/.snowflake/config.toml
           echo "✅ Config file created and secured."
 
       # 4️⃣ Verify Snowflake connection
-      - name: Verify Snowflake Connection
+      - name: Verify Snowflake connection
+        shell: bash
         run: |
-          snow sql -q "SELECT CURRENT_USER(), CURRENT_DATABASE(), CURRENT_SCHEMA();"
+          echo "🔎 Testing Snowflake connection..."
+          snow connection list
+          snow sql -q "SELECT CURRENT_USER(), CURRENT_ROLE(), CURRENT_DATABASE(), CURRENT_SCHEMA();" --format CSV
 
-      # 5️⃣ List ONNX files and find the latest
-      - name: Find latest ONNX file
-        id: latest
+      # 5️⃣ Trigger ML pipeline in Snowflake
+      - name: Trigger Snowflake ML pipeline
+        shell: bash
+        run: |
+          echo "🚀 Executing Snowflake ML pipeline..."
+          snow sql -q "
+            USE WAREHOUSE ${SNOWFLAKE_CONNECTIONS_DEFAULT_WAREHOUSE};
+            USE DATABASE ${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE};
+            USE SCHEMA ${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA};
+            EXECUTE TASK TASK_1_DATA_INGESTION;
+          "
+          echo "✅ Pipeline triggered successfully."
+
+      # 6️⃣ Wait for model training completion
+      - name: Wait for TASK_3_MODEL_TRAINING success
+        shell: bash
+        run: |
+          echo "⏳ Waiting for TASK_3_MODEL_TRAINING success..."
+          ATTEMPTS=20
+          SLEEP_SEC=30
+          i=1
+          while [ $i -le $ATTEMPTS ]; do
+            count=$(snow sql --format csv -q "
+              SELECT COUNT(*) FROM TABLE(
+                INFORMATION_SCHEMA.TASK_HISTORY(
+                  SCHEDULED_TIME_RANGE_START => DATEADD('minute', -60, CURRENT_TIMESTAMP())
+                )
+              )
+              WHERE NAME = 'TASK_3_MODEL_TRAINING' AND STATE = 'SUCCEEDED';
+            " | tail -n +2 | cut -d',' -f1)
+            echo "🔎 success_count(last 60m) = ${count}"
+            if [ "${count}" != "0" ]; then
+              echo "✅ Training task succeeded recently."
+              break
+            fi
+            i=$((i+1))
+            echo "…not done yet, sleeping ${SLEEP_SEC}s"
+            sleep ${SLEEP_SEC}
+          done
+          if [ "${count}" = "0" ]; then
+            echo "❌ Training task did not report success in time."
+            exit 1
+          fi
+
+      # 7️⃣ List ONNX models in stage
+      - name: List ONNX models in Snowflake stage
+        shell: bash
         run: |
           echo "📜 Listing ONNX models..."
+          snow sql -q "
+            USE DATABASE ${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE};
+            USE SCHEMA ${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA};
+            LIST @${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE}.${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA}.ML_MODELS_STAGE PATTERN='.*.onnx';
+          " --format table
+
+      # 8️⃣ Download newest ONNX model and push to repo + release
+      - name: Download latest ONNX file, commit, and release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          echo "📥 Fetching latest ONNX file..."
+          mkdir -p staged_models
+
           json_out=$(snow sql -q "
+            USE DATABASE ${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE};
+            USE SCHEMA ${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA};
             LIST @${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE}.${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA}.ML_MODELS_STAGE PATTERN='.*.onnx';
           " --format json)
 
@@ -90,36 +156,29 @@ jobs:
           ')
 
           if [ -z "$latest_file" ] || [ "$latest_file" == "null" ]; then
-            echo "❌ No ONNX file found!"
+            echo "❌ No ONNX files found!"
+            echo "$json_out" | head -n 40
             exit 1
           fi
 
+          echo "✅ Latest file: $latest_file"
           clean_file=${latest_file#ml_models_stage/}
-          echo "✅ Latest model: $clean_file"
-          echo "file_name=$clean_file" >> $GITHUB_OUTPUT
 
-      # 6️⃣ Download the latest model only
-      - name: Download latest ONNX model
-        run: |
-          mkdir -p staged_models
-          echo "📥 Downloading ${{ steps.latest.outputs.file_name }} ..."
-          snow sql -q "GET @${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE}.${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA}.ML_MODELS_STAGE/${{ steps.latest.outputs.file_name }} file://staged_models/"
-          echo "✅ Downloaded to staged_models/${{ steps.latest.outputs.file_name }}"
+          echo "🧩 Downloading model..."
+          snow sql -q "GET @${SNOWFLAKE_CONNECTIONS_DEFAULT_DATABASE}.${SNOWFLAKE_CONNECTIONS_DEFAULT_SCHEMA}.ML_MODELS_STAGE/$clean_file file://staged_models/"
+          echo "✅ Model downloaded to staged_models/$clean_file"
 
-      # 7️⃣ Commit and push latest model
-      - name: Commit latest model
-        run: |
+          # Commit model to repo
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add staged_models/
-          git commit -m "Add latest model: ${{ steps.latest.outputs.file_name }}" || echo "No changes to commit"
-          git push
+          git commit -m "Auto-sync ONNX model from Snowflake stage ($clean_file)" || echo "No new model changes"
 
-      # 8️⃣ Create a GitHub release with only the model file
-      - name: Create GitHub release (latest model only)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
+          CURRENT_BRANCH="${GITHUB_REF_NAME}"
+          echo "🔀 Current branch is ${CURRENT_BRANCH}"
+          git pull --rebase origin "${CURRENT_BRANCH}" || true
+          git push origin "${CURRENT_BRANCH}"
+
           RELEASE_TAG="model-$(date +'%Y%m%d-%H%M%S')"
           echo "📦 Creating release: $RELEASE_TAG"
           gh release create "$RELEASE_TAG" "staged_models/${{ steps.latest.outputs.file_name }}" \
@@ -128,4 +187,5 @@ jobs:
 
       # 9️⃣ Summary
       - name: Summary
-        run: echo "✅ Latest model and release successfully published."
+        run: |
+          echo "✅ Model committed to repo and released successfully!"
