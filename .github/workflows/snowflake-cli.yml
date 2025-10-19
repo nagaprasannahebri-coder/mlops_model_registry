@@ -179,11 +179,25 @@ jobs:
           git pull --rebase origin "${CURRENT_BRANCH}" || true
           git push origin "${CURRENT_BRANCH}"
 
+          # Create a release with the latest ONNX model
           RELEASE_TAG="model-$(date +'%Y%m%d-%H%M%S')"
           echo "📦 Creating release: $RELEASE_TAG"
-          gh release create "$RELEASE_TAG" "staged_models/${{ steps.latest.outputs.file_name }}" \
+          
+          # Get the downloaded model file name
+          LATEST_MODEL_FILE=$(basename "$clean_file")
+          
+          # Make sure it exists
+          if [ ! -f "staged_models/$LATEST_MODEL_FILE" ]; then
+            echo "❌ Model file not found at staged_models/$LATEST_MODEL_FILE"
+            exit 1
+          fi
+          
+          # Create GitHub release with only this file
+          gh release create "$RELEASE_TAG" "staged_models/$LATEST_MODEL_FILE" \
             --title "Model Release ($RELEASE_TAG)" \
-            --notes "Latest trained model automatically synced from Snowflake."
+            --notes "Latest trained model automatically synced from Snowflake." \
+            --latest
+
 
       # 9️⃣ Summary
       - name: Summary
