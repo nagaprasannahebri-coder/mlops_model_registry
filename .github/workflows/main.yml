@@ -1,0 +1,109 @@
+
+name: Snowflake Parameter Sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      building_id:
+        description: "Select Building"
+        required: false
+        type: choice
+        options:
+          - BUILDING_A
+          - BUILDING_B
+          - BUILDING_C
+          - ALL_BUILDINGS
+        default: ALL_BUILDINGS
+
+      start_date:
+        description: "Start Date (YYYY-MM-DD)"
+        required: false
+        type: string
+        default: ""
+
+      end_date:
+        description: "End Date (YYYY-MM-DD)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  sync-model:
+    runs-on: ubuntu-latest
+
+    env:
+      SNOWFLAKE_ACCOUNT:   ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      SNOWFLAKE_USER:      ${{ secrets.SNOWFLAKE_USER }}
+      SNOWFLAKE_PASSWORD:  ${{ secrets.SNOWFLAKE_PASSWORD }}
+      SNOWFLAKE_ROLE:      ${{ secrets.SNOWFLAKE_ROLE }}
+      SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+      SNOWFLAKE_DATABASE:  ${{ secrets.SNOWFLAKE_DATABASE }}
+      SNOWFLAKE_SCHEMA:    ${{ secrets.SNOWFLAKE_SCHEMA }}
+
+      BUILDING:   ${{ inputs.building_id }}
+      START_DATE: ${{ inputs.start_date }}
+      END_DATE:   ${{ inputs.end_date }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install Snowflake CLI & jq
+      run: |
+        python3 -m pip install --upgrade pip
+        pip install --user "snowflake-cli>=3.10.0"
+        sudo apt-get install -y jq
+        echo 'export PATH=$HOME/.local/bin:$PATH' >> $GITHUB_ENV
+
+    - name: Configure Snowflake connection
+      run: |
+        mkdir -p ~/.snowflake
+        {
+          echo "[connections.default]"
+          echo "account   = \"$SNOWFLAKE_ACCOUNT\""
+          echo "user      = \"$SNOWFLAKE_USER\""
+          echo "password  = \"$SNOWFLAKE_PASSWORD\""
+          echo "role      = \"$SNOWFLAKE_ROLE\""
+          echo "warehouse = \"$SNOWFLAKE_WAREHOUSE\""
+          echo "database  = \"$SNOWFLAKE_DATABASE\""
+          echo "schema    = \"$SNOWFLAKE_SCHEMA\""
+        } > ~/.snowflake/config.toml
+        chmod 600 ~/.snowflake/config.toml
+
+    - name: Apply Defaults to Inputs
+      id: defaults
+      run: |
+        if [[ -z "$BUILDING" ]]; then BUILDING="ALL_BUILDINGS"; fi
+        if [[ -z "$START_DATE" ]]; then START_DATE="2023-01-01"; fi
+        if [[ -z "$END_DATE" ]]; then END_DATE=$(date +"%Y-%m-%d"); fi
+
+        echo "building=$BUILDING"     >> $GITHUB_OUTPUT
+        echo "start_date=$START_DATE" >> $GITHUB_OUTPUT
+        echo "end_date=$END_DATE"     >> $GITHUB_OUTPUT
+
+    - name: Trigger ML Pipeline
+      run: |
+        FINAL_BUILDING="${{ steps.defaults.outputs.building }}"
+        FINAL_START="${{ steps.defaults.outputs.start_date }}"
+        FINAL_END="${{ steps.defaults.outputs.end_date }}"
+
+        echo "Running Pipeline:"
+        echo "$FINAL_BUILDING | $FINAL_START → $FINAL_END"
+
+        snow sql -q "
+          CALL TRAIN_MODEL_FOR_BUILDING(
+            '$FINAL_BUILDING',
+            '$FINAL_START',
+            '$FINAL_END'
+          );
+        "
+
+    - name: Summary
+      run: |
+        echo "Completed!"
+        echo "Building: ${{ steps.defaults.outputs.building }}"
+        echo "From:     ${{ steps.defaults.outputs.start_date }}"
+        echo "To:       ${{ steps.defaults.outputs.end_date }}"
